@@ -1,13 +1,14 @@
-// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
+using System;
+using osuTK;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
-using osu.Framework.Input;
-using osu.Framework.Timing;
+using osu.Framework.Input.Events;
+using osu.Framework.Threading;
 using osu.Game.Beatmaps;
 using osu.Game.Graphics;
 
@@ -18,30 +19,31 @@ namespace osu.Game.Screens.Edit.Components.Timelines.Summary.Parts
     /// </summary>
     public class MarkerPart : TimelinePart
     {
-        private readonly Drawable marker;
+        private Drawable marker;
 
-        private readonly IAdjustableClock adjustableClock;
+        [Resolved]
+        private EditorClock editorClock { get; set; }
 
-        public MarkerPart(IAdjustableClock adjustableClock)
+        [BackgroundDependencyLoader]
+        private void load()
         {
-            this.adjustableClock = adjustableClock;
-
             Add(marker = new MarkerVisualisation());
         }
 
-        protected override bool OnDragStart(InputState state) => true;
-        protected override bool OnDragEnd(InputState state) => true;
-        protected override bool OnDrag(InputState state)
+        protected override bool OnDragStart(DragStartEvent e) => true;
+
+        protected override void OnDrag(DragEvent e)
         {
-            seekToPosition(state.Mouse.NativeState.Position);
+            seekToPosition(e.ScreenSpaceMousePosition);
+        }
+
+        protected override bool OnMouseDown(MouseDownEvent e)
+        {
+            seekToPosition(e.ScreenSpaceMousePosition);
             return true;
         }
 
-        protected override bool OnMouseDown(InputState state, MouseDownEventArgs args)
-        {
-            seekToPosition(state.Mouse.NativeState.Position);
-            return true;
-        }
+        private ScheduledDelegate scheduledSeek;
 
         /// <summary>
         /// Seeks the <see cref="SummaryTimeline"/> to the time closest to a position on the screen relative to the <see cref="SummaryTimeline"/>.
@@ -49,19 +51,21 @@ namespace osu.Game.Screens.Edit.Components.Timelines.Summary.Parts
         /// <param name="screenPosition">The position in screen coordinates.</param>
         private void seekToPosition(Vector2 screenPosition)
         {
-            if (Beatmap.Value == null)
-                return;
+            scheduledSeek?.Cancel();
+            scheduledSeek = Schedule(() =>
+            {
+                if (Beatmap.Value == null)
+                    return;
 
-            if (Beatmap.Value.Track.Length == double.PositiveInfinity) return;
-
-            float markerPos = MathHelper.Clamp(ToLocalSpace(screenPosition).X, 0, DrawWidth);
-            adjustableClock.Seek(markerPos / DrawWidth * Beatmap.Value.Track.Length);
+                float markerPos = Math.Clamp(ToLocalSpace(screenPosition).X, 0, DrawWidth);
+                editorClock.SeekTo(markerPos / DrawWidth * editorClock.TrackLength);
+            });
         }
 
         protected override void Update()
         {
             base.Update();
-            marker.X = (float)adjustableClock.CurrentTime;
+            marker.X = (float)editorClock.CurrentTime;
         }
 
         protected override void LoadBeatmap(WorkingBeatmap beatmap)

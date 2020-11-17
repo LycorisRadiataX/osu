@@ -1,13 +1,14 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK.Graphics;
+using System.Diagnostics;
+using osu.Framework.Bindables;
 using osu.Framework.Graphics;
 using osu.Framework.Input.Bindings;
-using osu.Game.Rulesets.Mania.Judgements;
 using osu.Game.Rulesets.Mania.Objects.Drawables.Pieces;
-using osu.Game.Rulesets.Objects.Drawables;
 using osu.Game.Rulesets.Scoring;
+using osu.Game.Rulesets.UI.Scrolling;
+using osu.Game.Skinning;
 
 namespace osu.Game.Rulesets.Mania.Objects.Drawables
 {
@@ -16,51 +17,38 @@ namespace osu.Game.Rulesets.Mania.Objects.Drawables
     /// </summary>
     public class DrawableNote : DrawableManiaHitObject<Note>, IKeyBindingHandler<ManiaAction>
     {
-        protected readonly GlowPiece GlowPiece;
+        protected virtual ManiaSkinComponents Component => ManiaSkinComponents.Note;
 
-        private readonly LaneGlowPiece laneGlowPiece;
-        private readonly NotePiece headPiece;
+        private readonly Drawable headPiece;
 
-        public DrawableNote(Note hitObject, ManiaAction action)
-            : base(hitObject, action)
+        public DrawableNote(Note hitObject)
+            : base(hitObject)
         {
             RelativeSizeAxes = Axes.X;
             AutoSizeAxes = Axes.Y;
 
-            InternalChildren = new Drawable[]
+            AddInternal(headPiece = new SkinnableDrawable(new ManiaSkinComponent(Component, hitObject.Column), _ => new DefaultNotePiece())
             {
-                laneGlowPiece = new LaneGlowPiece
-                {
-                    Anchor = Anchor.Centre,
-                    Origin = Anchor.Centre
-                },
-                GlowPiece = new GlowPiece(),
-                headPiece = new NotePiece
-                {
-                    Anchor = Anchor.TopCentre,
-                    Origin = Anchor.TopCentre
-                }
-            };
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y
+            });
         }
 
-        public override Color4 AccentColour
+        protected override void OnDirectionChanged(ValueChangedEvent<ScrollingDirection> e)
         {
-            get { return base.AccentColour; }
-            set
-            {
-                base.AccentColour = value;
-                laneGlowPiece.AccentColour = AccentColour;
-                GlowPiece.AccentColour = AccentColour;
-                headPiece.AccentColour = AccentColour;
-            }
+            base.OnDirectionChanged(e);
+
+            headPiece.Anchor = headPiece.Origin = e.NewValue == ScrollingDirection.Up ? Anchor.TopCentre : Anchor.BottomCentre;
         }
 
-        protected override void CheckForJudgements(bool userTriggered, double timeOffset)
+        protected override void CheckForResult(bool userTriggered, double timeOffset)
         {
+            Debug.Assert(HitObject.HitWindows != null);
+
             if (!userTriggered)
             {
                 if (!HitObject.HitWindows.CanBeHit(timeOffset))
-                    AddJudgement(new ManiaJudgement { Result = HitResult.Miss });
+                    ApplyResult(r => r.Type = r.Judgement.MinResult);
                 return;
             }
 
@@ -68,28 +56,22 @@ namespace osu.Game.Rulesets.Mania.Objects.Drawables
             if (result == HitResult.None)
                 return;
 
-            AddJudgement(new ManiaJudgement { Result = result });
-        }
-
-        protected override void UpdateState(ArmedState state)
-        {
-            switch (state)
-            {
-                case ArmedState.Hit:
-                case ArmedState.Miss:
-                    this.FadeOut(100).Expire();
-                    break;
-            }
+            ApplyResult(r => r.Type = result);
         }
 
         public virtual bool OnPressed(ManiaAction action)
         {
-            if (action != Action)
+            if (action != Action.Value)
                 return false;
 
-            return UpdateJudgement(true);
+            if (CheckHittable?.Invoke(this, Time.Current) == false)
+                return false;
+
+            return UpdateResult(true);
         }
 
-        public virtual bool OnReleased(ManiaAction action) => false;
+        public virtual void OnReleased(ManiaAction action)
+        {
+        }
     }
 }

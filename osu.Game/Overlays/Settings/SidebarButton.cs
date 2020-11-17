@@ -1,51 +1,49 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using System;
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK;
+using osuTK.Graphics;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
-using osu.Framework.Input;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Sprites;
 using osu.Game.Graphics.UserInterface;
+using osu.Game.Graphics.Containers;
 
 namespace osu.Game.Overlays.Settings
 {
     public class SidebarButton : OsuButton
     {
-        private readonly SpriteIcon drawableIcon;
+        private readonly ConstrainedIconContainer iconContainer;
         private readonly SpriteText headerText;
         private readonly Box selectionIndicator;
         private readonly Container text;
-        public new Action<SettingsSection> Action;
 
         private SettingsSection section;
+
         public SettingsSection Section
         {
-            get
-            {
-                return section;
-            }
+            get => section;
             set
             {
                 section = value;
                 headerText.Text = value.Header;
-                drawableIcon.Icon = value.Icon;
+                iconContainer.Icon = value.CreateIcon();
             }
         }
 
         private bool selected;
+
         public bool Selected
         {
-            get { return selected; }
+            get => selected;
             set
             {
                 selected = value;
+
                 if (selected)
                 {
                     selectionIndicator.FadeIn(50);
@@ -61,11 +59,10 @@ namespace osu.Game.Overlays.Settings
 
         public SidebarButton()
         {
-            BackgroundColour = OsuColour.Gray(60);
-            Background.Alpha = 0;
-
             Height = Sidebar.DEFAULT_WIDTH;
             RelativeSizeAxes = Axes.X;
+
+            BackgroundColour = Color4.Black;
 
             AddRange(new Drawable[]
             {
@@ -82,7 +79,7 @@ namespace osu.Game.Overlays.Settings
                             Anchor = Anchor.CentreLeft,
                             Origin = Anchor.CentreLeft,
                         },
-                        drawableIcon = new SpriteIcon
+                        iconContainer = new ConstrainedIconContainer
                         {
                             Anchor = Anchor.Centre,
                             Origin = Anchor.Centre,
@@ -97,7 +94,7 @@ namespace osu.Game.Overlays.Settings
                     Width = 5,
                     Anchor = Anchor.CentreRight,
                     Origin = Anchor.CentreRight,
-                }
+                },
             });
         }
 
@@ -105,24 +102,6 @@ namespace osu.Game.Overlays.Settings
         private void load(OsuColour colours)
         {
             selectionIndicator.Colour = colours.Yellow;
-        }
-
-        protected override bool OnClick(InputState state)
-        {
-            Action?.Invoke(section);
-            return base.OnClick(state);
-        }
-
-        protected override bool OnHover(InputState state)
-        {
-            Background.FadeTo(0.4f, 200);
-            return base.OnHover(state);
-        }
-
-        protected override void OnHoverLost(InputState state)
-        {
-            Background.FadeTo(0, 200);
-            base.OnHoverLost(state);
         }
     }
 }

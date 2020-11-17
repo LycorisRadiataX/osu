@@ -1,17 +1,19 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Shapes;
-using OpenTK;
+using osu.Game.Rulesets.Objects;
+using osuTK;
 using osu.Game.Rulesets.Objects.Drawables;
+using osu.Game.Skinning;
 
 namespace osu.Game.Rulesets.Taiko.Objects.Drawables
 {
     /// <summary>
     /// A line that scrolls alongside hit objects in the playfield and visualises control points.
     /// </summary>
-    public class DrawableBarLine : DrawableHitObject<TaikoHitObject>
+    public class DrawableBarLine : DrawableHitObject<HitObject>
     {
         /// <summary>
         /// The width of the line tracker.
@@ -26,7 +28,7 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
         /// <summary>
         /// The visual line tracker.
         /// </summary>
-        protected Box Tracker;
+        protected SkinnableDrawable Line;
 
         /// <summary>
         /// The bar line.
@@ -44,21 +46,18 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
             RelativeSizeAxes = Axes.Y;
             Width = tracker_width;
 
-            InternalChildren = new[]
+            AddInternal(Line = new SkinnableDrawable(new TaikoSkinComponent(TaikoSkinComponents.BarLine), _ => new Box
             {
-                Tracker = new Box
-                {
-                    Anchor = Anchor.Centre,
-                    Origin = Anchor.Centre,
-                    RelativeSizeAxes = Axes.Both,
-                    EdgeSmoothness = new Vector2(0.5f, 0),
-                    Alpha = 0.75f
-                }
-            };
+                RelativeSizeAxes = Axes.Both,
+                EdgeSmoothness = new Vector2(0.5f, 0),
+            })
+            {
+                Anchor = Anchor.Centre,
+                Origin = Anchor.Centre,
+                Alpha = 0.75f,
+            });
         }
 
-        protected override void UpdateState(ArmedState state)
-        {
-        }
+        protected override void UpdateHitStateTransforms(ArmedState state) => this.FadeOut(150);
     }
 }

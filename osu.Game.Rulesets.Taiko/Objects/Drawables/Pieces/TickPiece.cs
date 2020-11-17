@@ -1,15 +1,15 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK;
+using osuTK.Graphics;
 using osu.Framework.Graphics.Shapes;
 
 namespace osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces
 {
-    public class TickPiece : TaikoPiece
+    public class TickPiece : CompositeDrawable
     {
         /// <summary>
         /// Any tick that is not the first for a drumroll is not filled, but is instead displayed
@@ -23,9 +23,10 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces
         private const float tick_size = 0.35f;
 
         private bool filled;
+
         public bool Filled
         {
-            get { return filled; }
+            get => filled;
             set
             {
                 filled = value;
@@ -44,7 +45,7 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces
             FillMode = FillMode.Fit;
             Size = new Vector2(tick_size);
 
-            Add(new CircularContainer
+            InternalChild = new CircularContainer
             {
                 RelativeSizeAxes = Axes.Both,
                 Masking = true,
@@ -59,7 +60,7 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces
                         AlwaysPresent = true
                     }
                 }
-            });
+            };
         }
     }
 }

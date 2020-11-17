@@ -1,8 +1,11 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using osu.Game.Beatmaps;
 using osu.Game.Beatmaps.ControlPoints;
+using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Osu.Judgements;
+using osu.Game.Rulesets.Scoring;
 
 namespace osu.Game.Rulesets.Osu.Objects
 {
@@ -22,9 +25,18 @@ namespace osu.Game.Rulesets.Osu.Objects
                 // This is so on repeats ticks don't appear too late to be visually processed by the player.
                 offset = 200;
             else
-                offset = TimeFadein * 0.66f;
+                offset = TimeFadeIn * 0.66f;
 
             TimePreempt = (StartTime - SpanStartTime) / 2 + offset;
+        }
+
+        protected override HitWindows CreateHitWindows() => HitWindows.Empty;
+
+        public override Judgement CreateJudgement() => new SliderTickJudgement();
+
+        public class SliderTickJudgement : OsuJudgement
+        {
+            public override HitResult MaxResult => HitResult.LargeTickHit;
         }
     }
 }

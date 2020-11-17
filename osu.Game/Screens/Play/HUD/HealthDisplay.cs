@@ -1,24 +1,36 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using osu.Framework.Configuration;
+using osu.Framework.Bindables;
 using osu.Framework.Graphics.Containers;
+using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Scoring;
+using osu.Game.Rulesets.UI;
 
 namespace osu.Game.Screens.Play.HUD
 {
-    public abstract class HealthDisplay : Container
+    /// <summary>
+    /// A container for components displaying the current player health.
+    /// Gets bound automatically to the <see cref="HealthProcessor"/> when inserted to <see cref="DrawableRuleset.Overlays"/> hierarchy.
+    /// </summary>
+    public abstract class HealthDisplay : Container, IHealthDisplay
     {
-        public readonly BindableDouble Current = new BindableDouble
+        public Bindable<double> Current { get; } = new BindableDouble(1)
         {
             MinValue = 0,
             MaxValue = 1
         };
 
-        protected HealthDisplay()
+        public virtual void Flash(JudgementResult result)
         {
-            Current.ValueChanged += newValue => SetHealth((float)newValue);
         }
 
-        protected abstract void SetHealth(float value);
+        /// <summary>
+        /// Bind the tracked fields of <see cref="HealthProcessor"/> to this health display.
+        /// </summary>
+        public virtual void BindHealthProcessor(HealthProcessor processor)
+        {
+            Current.BindTo(processor.Health);
+        }
     }
 }

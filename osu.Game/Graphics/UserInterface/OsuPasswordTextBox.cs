@@ -1,28 +1,37 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
-using OpenTK.Graphics;
-using OpenTK.Input;
+using osuTK;
+using osuTK.Graphics;
+using osuTK.Input;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Cursor;
 using osu.Framework.Graphics.Shapes;
+using osu.Framework.Graphics.Sprites;
 using osu.Framework.Input;
+using osu.Framework.Input.Events;
 using osu.Framework.Platform;
 
 namespace osu.Game.Graphics.UserInterface
 {
-    public class OsuPasswordTextBox : OsuTextBox
+    public class OsuPasswordTextBox : OsuTextBox, ISuppressKeyEventLogging
     {
-        protected override Drawable GetDrawableCharacter(char c) => new PasswordMaskChar(CalculatedTextSize);
+        protected override Drawable GetDrawableCharacter(char c) => new FallingDownContainer
+        {
+            AutoSizeAxes = Axes.Both,
+            Child = new PasswordMaskChar(CalculatedTextSize),
+        };
 
-        public override bool AllowClipboardExport => false;
+        protected override bool AllowUniqueCharacterSamples => false;
+
+        protected override bool AllowClipboardExport => false;
 
         private readonly CapsWarning warning;
 
-        private GameHost host;
+        [Resolved]
+        private GameHost host { get; set; }
 
         public OsuPasswordTextBox()
         {
@@ -36,29 +45,23 @@ namespace osu.Game.Graphics.UserInterface
             });
         }
 
-        [BackgroundDependencyLoader]
-        private void load(GameHost host)
+        protected override bool OnKeyDown(KeyDownEvent e)
         {
-            this.host = host;
-        }
-
-        protected override bool OnKeyDown(InputState state, KeyDownEventArgs args)
-        {
-            if (args.Key == Key.CapsLock)
+            if (e.Key == Key.CapsLock)
                 updateCapsWarning(host.CapsLockEnabled);
-            return base.OnKeyDown(state, args);
+            return base.OnKeyDown(e);
         }
 
-        protected override void OnFocus(InputState state)
+        protected override void OnFocus(FocusEvent e)
         {
             updateCapsWarning(host.CapsLockEnabled);
-            base.OnFocus(state);
+            base.OnFocus(e);
         }
 
-        protected override void OnFocusLost(InputState state)
+        protected override void OnFocusLost(FocusLostEvent e)
         {
             updateCapsWarning(false);
-            base.OnFocusLost(state);
+            base.OnFocusLost(e);
         }
 
         private void updateCapsWarning(bool visible) => warning.FadeTo(visible ? 1 : 0, 250, Easing.OutQuint);
@@ -102,11 +105,11 @@ namespace osu.Game.Graphics.UserInterface
 
         private class CapsWarning : SpriteIcon, IHasTooltip
         {
-            public string TooltipText => @"Caps lock is active";
+            public string TooltipText => @"caps lock is active";
 
             public CapsWarning()
             {
-                Icon = FontAwesome.fa_warning;
+                Icon = FontAwesome.Solid.ExclamationTriangle;
             }
 
             [BackgroundDependencyLoader]

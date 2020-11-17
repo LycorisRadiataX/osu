@@ -1,5 +1,5 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using osu.Game.Beatmaps;
 using osu.Game.Graphics;
@@ -9,6 +9,7 @@ using osu.Game.Rulesets.Taiko.UI;
 using osu.Game.Rulesets.UI;
 using System.Collections.Generic;
 using osu.Framework.Graphics;
+using osu.Framework.Graphics.Sprites;
 using osu.Framework.Input.Bindings;
 using osu.Game.Rulesets.Replays.Types;
 using osu.Game.Rulesets.Taiko.Replays;
@@ -17,34 +18,58 @@ using osu.Game.Rulesets.Difficulty;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Rulesets.Taiko.Beatmaps;
 using osu.Game.Rulesets.Taiko.Difficulty;
+using osu.Game.Rulesets.Taiko.Scoring;
+using osu.Game.Scoring;
+using System;
+using System.Linq;
+using osu.Game.Rulesets.Edit;
+using osu.Game.Rulesets.Taiko.Edit;
+using osu.Game.Rulesets.Taiko.Objects;
+using osu.Game.Rulesets.Taiko.Skinning;
+using osu.Game.Screens.Ranking.Statistics;
+using osu.Game.Skinning;
 
 namespace osu.Game.Rulesets.Taiko
 {
-    public class TaikoRuleset : Ruleset
+    public class TaikoRuleset : Ruleset, ILegacyRuleset
     {
-        public override RulesetContainer CreateRulesetContainerWith(WorkingBeatmap beatmap) => new TaikoRulesetContainer(this, beatmap);
-        public override IBeatmapConverter CreateBeatmapConverter(IBeatmap beatmap) => new TaikoBeatmapConverter(beatmap);
+        public override DrawableRuleset CreateDrawableRulesetWith(IBeatmap beatmap, IReadOnlyList<Mod> mods = null) => new DrawableTaikoRuleset(this, beatmap, mods);
+
+        public override ScoreProcessor CreateScoreProcessor() => new TaikoScoreProcessor();
+
+        public override HealthProcessor CreateHealthProcessor(double drainStartTime) => new TaikoHealthProcessor();
+
+        public override IBeatmapConverter CreateBeatmapConverter(IBeatmap beatmap) => new TaikoBeatmapConverter(beatmap, this);
+
+        public override ISkin CreateLegacySkinProvider(ISkinSource source, IBeatmap beatmap) => new TaikoLegacySkinTransformer(source);
+
+        public const string SHORT_NAME = "taiko";
 
         public override IEnumerable<KeyBinding> GetDefaultKeyBindings(int variant = 0) => new[]
         {
+            new KeyBinding(InputKey.MouseLeft, TaikoAction.LeftCentre),
+            new KeyBinding(InputKey.MouseRight, TaikoAction.LeftRim),
             new KeyBinding(InputKey.D, TaikoAction.LeftRim),
             new KeyBinding(InputKey.F, TaikoAction.LeftCentre),
             new KeyBinding(InputKey.J, TaikoAction.RightCentre),
             new KeyBinding(InputKey.K, TaikoAction.RightRim),
-            new KeyBinding(InputKey.MouseLeft, TaikoAction.LeftCentre),
-            new KeyBinding(InputKey.MouseLeft, TaikoAction.RightCentre),
-            new KeyBinding(InputKey.MouseRight, TaikoAction.LeftRim),
-            new KeyBinding(InputKey.MouseRight, TaikoAction.RightRim),
         };
 
-        public override IEnumerable<Mod> ConvertLegacyMods(LegacyMods mods)
+        public override IEnumerable<Mod> ConvertFromLegacyMods(LegacyMods mods)
         {
             if (mods.HasFlag(LegacyMods.Nightcore))
                 yield return new TaikoModNightcore();
             else if (mods.HasFlag(LegacyMods.DoubleTime))
                 yield return new TaikoModDoubleTime();
 
-            if (mods.HasFlag(LegacyMods.Autoplay))
+            if (mods.HasFlag(LegacyMods.Perfect))
+                yield return new TaikoModPerfect();
+            else if (mods.HasFlag(LegacyMods.SuddenDeath))
+                yield return new TaikoModSuddenDeath();
+
+            if (mods.HasFlag(LegacyMods.Cinema))
+                yield return new TaikoModCinema();
+            else if (mods.HasFlag(LegacyMods.Autoplay))
                 yield return new TaikoModAutoplay();
 
             if (mods.HasFlag(LegacyMods.Easy))
@@ -65,14 +90,21 @@ namespace osu.Game.Rulesets.Taiko
             if (mods.HasFlag(LegacyMods.NoFail))
                 yield return new TaikoModNoFail();
 
-            if (mods.HasFlag(LegacyMods.Perfect))
-                yield return new TaikoModPerfect();
-
             if (mods.HasFlag(LegacyMods.Relax))
                 yield return new TaikoModRelax();
 
-            if (mods.HasFlag(LegacyMods.SuddenDeath))
-                yield return new TaikoModSuddenDeath();
+            if (mods.HasFlag(LegacyMods.Random))
+                yield return new TaikoModRandom();
+        }
+
+        public override LegacyMods ConvertToLegacyMods(Mod[] mods)
+        {
+            var value = base.ConvertToLegacyMods(mods);
+
+            if (mods.OfType<TaikoModRandom>().Any())
+                value |= LegacyMods.Random;
+
+            return value;
         }
 
         public override IEnumerable<Mod> GetModsFor(ModType type)
@@ -84,78 +116,117 @@ namespace osu.Game.Rulesets.Taiko
                     {
                         new TaikoModEasy(),
                         new TaikoModNoFail(),
-                        new MultiMod
-                        {
-                            Mods = new Mod[]
-                            {
-                                new TaikoModHalfTime(),
-                                new TaikoModDaycore(),
-                            },
-                        },
+                        new MultiMod(new TaikoModHalfTime(), new TaikoModDaycore()),
                     };
 
                 case ModType.DifficultyIncrease:
                     return new Mod[]
                     {
                         new TaikoModHardRock(),
-                        new MultiMod
-                        {
-                            Mods = new Mod[]
-                            {
-                                new TaikoModSuddenDeath(),
-                                new TaikoModPerfect(),
-                            },
-                        },
-                        new MultiMod
-                        {
-                            Mods = new Mod[]
-                            {
-                                new TaikoModDoubleTime(),
-                                new TaikoModNightcore(),
-                            },
-                        },
+                        new MultiMod(new TaikoModSuddenDeath(), new TaikoModPerfect()),
+                        new MultiMod(new TaikoModDoubleTime(), new TaikoModNightcore()),
                         new TaikoModHidden(),
                         new TaikoModFlashlight(),
                     };
 
-                case ModType.Special:
+                case ModType.Conversion:
                     return new Mod[]
                     {
+                        new TaikoModRandom(),
+                        new TaikoModDifficultyAdjust(),
+                    };
+
+                case ModType.Automation:
+                    return new Mod[]
+                    {
+                        new MultiMod(new TaikoModAutoplay(), new TaikoModCinema()),
                         new TaikoModRelax(),
-                        null,
-                        null,
-                        new MultiMod
-                        {
-                            Mods = new Mod[]
-                            {
-                                new TaikoModAutoplay(),
-                                new ModCinema(),
-                            },
-                        },
+                    };
+
+                case ModType.Fun:
+                    return new Mod[]
+                    {
+                        new MultiMod(new ModWindUp(), new ModWindDown())
                     };
 
                 default:
-                    return new Mod[] { };
+                    return Array.Empty<Mod>();
             }
         }
 
         public override string Description => "osu!taiko";
 
-        public override string ShortName => "taiko";
+        public override string ShortName => SHORT_NAME;
 
-        public override Drawable CreateIcon() => new SpriteIcon { Icon = FontAwesome.fa_osu_taiko_o };
+        public override string PlayingVerb => "Bashing drums";
 
-        public override DifficultyCalculator CreateDifficultyCalculator(IBeatmap beatmap, Mod[] mods = null) => new TaikoDifficultyCalculator(beatmap, mods);
+        public override Drawable CreateIcon() => new SpriteIcon { Icon = OsuIcon.RulesetTaiko };
 
-        public override PerformanceCalculator CreatePerformanceCalculator(IBeatmap beatmap, Score score) => new TaikoPerformanceCalculator(this, beatmap, score);
+        public override HitObjectComposer CreateHitObjectComposer() => new TaikoHitObjectComposer(this);
 
-        public override int? LegacyID => 1;
+        public override DifficultyCalculator CreateDifficultyCalculator(WorkingBeatmap beatmap) => new TaikoDifficultyCalculator(this, beatmap);
+
+        public override PerformanceCalculator CreatePerformanceCalculator(DifficultyAttributes attributes, ScoreInfo score) => new TaikoPerformanceCalculator(this, attributes, score);
+
+        public int LegacyID => 1;
 
         public override IConvertibleReplayFrame CreateConvertibleReplayFrame() => new TaikoReplayFrame();
 
-        public TaikoRuleset(RulesetInfo rulesetInfo = null)
-            : base(rulesetInfo)
+        protected override IEnumerable<HitResult> GetValidHitResults()
         {
+            return new[]
+            {
+                HitResult.Great,
+                HitResult.Ok,
+
+                HitResult.SmallTickHit,
+
+                HitResult.SmallBonus,
+            };
+        }
+
+        public override string GetDisplayNameForHitResult(HitResult result)
+        {
+            switch (result)
+            {
+                case HitResult.SmallTickHit:
+                    return "drum tick";
+
+                case HitResult.SmallBonus:
+                    return "strong bonus";
+            }
+
+            return base.GetDisplayNameForHitResult(result);
+        }
+
+        public override StatisticRow[] CreateStatisticsForScore(ScoreInfo score, IBeatmap playableBeatmap)
+        {
+            var timedHitEvents = score.HitEvents.Where(e => e.HitObject is Hit).ToList();
+
+            return new[]
+            {
+                new StatisticRow
+                {
+                    Columns = new[]
+                    {
+                        new StatisticItem("Timing Distribution", new HitEventTimingDistributionGraph(timedHitEvents)
+                        {
+                            RelativeSizeAxes = Axes.X,
+                            Height = 250
+                        }),
+                    }
+                },
+                new StatisticRow
+                {
+                    Columns = new[]
+                    {
+                        new StatisticItem(string.Empty, new SimpleStatisticTable(3, new SimpleStatisticItem[]
+                        {
+                            new UnstableRate(timedHitEvents)
+                        }))
+                    }
+                }
+            };
         }
     }
 }

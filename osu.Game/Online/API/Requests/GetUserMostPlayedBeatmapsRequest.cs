@@ -1,48 +1,21 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using Newtonsoft.Json;
-using osu.Game.Beatmaps;
-using osu.Game.Rulesets;
 using System.Collections.Generic;
+using osu.Game.Online.API.Requests.Responses;
 
 namespace osu.Game.Online.API.Requests
 {
-    public class GetUserMostPlayedBeatmapsRequest : APIRequest<List<MostPlayedBeatmap>>
+    public class GetUserMostPlayedBeatmapsRequest : PaginatedAPIRequest<List<APIUserMostPlayedBeatmap>>
     {
         private readonly long userId;
-        private readonly int offset;
 
-        public GetUserMostPlayedBeatmapsRequest(long userId, int offset = 0)
+        public GetUserMostPlayedBeatmapsRequest(long userId, int page = 0, int itemsPerPage = 5)
+            : base(page, itemsPerPage)
         {
             this.userId = userId;
-            this.offset = offset;
         }
 
-        protected override string Target => $@"users/{userId}/beatmapsets/most_played?offset={offset}";
-    }
-
-    public class MostPlayedBeatmap
-    {
-        [JsonProperty("beatmap_id")]
-        public int BeatmapID;
-
-        [JsonProperty("count")]
-        public int PlayCount;
-
-        [JsonProperty]
-        private BeatmapInfo beatmap;
-
-        [JsonProperty]
-        private APIResponseBeatmapSet beatmapSet;
-
-        public BeatmapInfo GetBeatmapInfo(RulesetStore rulesets)
-        {
-            BeatmapSetInfo setInfo = beatmapSet.ToBeatmapSet(rulesets);
-            beatmap.BeatmapSet = setInfo;
-            beatmap.OnlineBeatmapSetID = setInfo.OnlineBeatmapSetID;
-            beatmap.Metadata = setInfo.Metadata;
-            return beatmap;
-        }
+        protected override string Target => $@"users/{userId}/beatmapsets/most_played";
     }
 }

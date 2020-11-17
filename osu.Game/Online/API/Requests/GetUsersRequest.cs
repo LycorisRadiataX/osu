@@ -1,20 +1,24 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using System.Collections.Generic;
-using Newtonsoft.Json;
-using osu.Game.Users;
+using System;
 
 namespace osu.Game.Online.API.Requests
 {
-    public class GetUsersRequest : APIRequest<List<RankingEntry>>
+    public class GetUsersRequest : APIRequest<GetUsersResponse>
     {
-        protected override string Target => @"rankings/osu/performance";
-    }
+        private readonly int[] userIds;
 
-    public class RankingEntry
-    {
-        [JsonProperty]
-        public User User;
+        private const int max_ids_per_request = 50;
+
+        public GetUsersRequest(int[] userIds)
+        {
+            if (userIds.Length > max_ids_per_request)
+                throw new ArgumentException($"{nameof(GetUsersRequest)} calls only support up to {max_ids_per_request} IDs at once");
+
+            this.userIds = userIds;
+        }
+
+        protected override string Target => "users/?ids[]=" + string.Join("&ids[]=", userIds);
     }
 }

@@ -1,44 +1,63 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using osu.Framework.Extensions.Color4Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Overlays.Dialog;
-using OpenTK.Graphics;
-using osu.Framework.Graphics.Shapes;
 using osu.Game.Graphics.Containers;
+using osu.Game.Input.Bindings;
+using System.Linq;
 
 namespace osu.Game.Overlays
 {
     public class DialogOverlay : OsuFocusedOverlayContainer
     {
         private readonly Container dialogContainer;
-        private PopupDialog currentDialog;
+
+        public PopupDialog CurrentDialog { get; private set; }
+
+        public DialogOverlay()
+        {
+            RelativeSizeAxes = Axes.Both;
+
+            Child = dialogContainer = new Container
+            {
+                RelativeSizeAxes = Axes.Both,
+            };
+
+            Width = 0.4f;
+            Anchor = Anchor.BottomCentre;
+            Origin = Anchor.BottomCentre;
+        }
 
         public void Push(PopupDialog dialog)
         {
-            if (dialog == currentDialog) return;
+            if (dialog == CurrentDialog) return;
 
-            currentDialog?.Hide();
-            currentDialog = dialog;
+            CurrentDialog?.Hide();
+            CurrentDialog = dialog;
 
-            dialogContainer.Add(currentDialog);
+            dialogContainer.Add(CurrentDialog);
 
-            currentDialog.Show();
-            currentDialog.StateChanged += state => onDialogOnStateChanged(dialog, state);
-            State = Visibility.Visible;
+            CurrentDialog.Show();
+            CurrentDialog.State.ValueChanged += state => onDialogOnStateChanged(dialog, state.NewValue);
+            Show();
         }
+
+        protected override bool BlockNonPositionalInput => true;
 
         private void onDialogOnStateChanged(VisibilityContainer dialog, Visibility v)
         {
             if (v != Visibility.Hidden) return;
 
-            //handle the dialog being dismissed.
+            // handle the dialog being dismissed.
             dialog.Delay(PopupDialog.EXIT_DURATION).Expire();
 
-            if (dialog == currentDialog)
-                State = Visibility.Hidden;
+            if (dialog == CurrentDialog)
+            {
+                Hide();
+                CurrentDialog = null;
+            }
         }
 
         protected override void PopIn()
@@ -50,32 +69,26 @@ namespace osu.Game.Overlays
         protected override void PopOut()
         {
             base.PopOut();
+
+            if (CurrentDialog?.State.Value == Visibility.Visible)
+            {
+                CurrentDialog.Hide();
+                return;
+            }
+
             this.FadeOut(PopupDialog.EXIT_DURATION, Easing.InSine);
         }
 
-        public DialogOverlay()
+        public override bool OnPressed(GlobalAction action)
         {
-            RelativeSizeAxes = Axes.Both;
-
-            Children = new Drawable[]
+            switch (action)
             {
-                new Container
-                {
-                    RelativeSizeAxes = Axes.Both,
-                    Children = new Drawable[]
-                    {
-                        new Box
-                        {
-                            RelativeSizeAxes = Axes.Both,
-                            Colour = Color4.Black.Opacity(0.5f),
-                        },
-                    },
-                },
-                dialogContainer = new Container
-                {
-                    RelativeSizeAxes = Axes.Both,
-                },
-            };
+                case GlobalAction.Select:
+                    CurrentDialog?.Buttons.OfType<PopupDialogOkButton>().FirstOrDefault()?.Click();
+                    return true;
+            }
+
+            return base.OnPressed(action);
         }
     }
 }

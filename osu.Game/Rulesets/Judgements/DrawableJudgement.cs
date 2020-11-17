@@ -1,111 +1,154 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
+using System.Diagnostics;
+using JetBrains.Annotations;
+using osuTK;
 using osu.Framework.Allocation;
 using osu.Framework.Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
+using osu.Framework.Graphics.Pooling;
 using osu.Framework.Graphics.Sprites;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Sprites;
 using osu.Game.Rulesets.Objects.Drawables;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Skinning;
-using OpenTK.Graphics;
 
 namespace osu.Game.Rulesets.Judgements
 {
     /// <summary>
     /// A drawable object which visualises the hit result of a <see cref="Judgements.Judgement"/>.
     /// </summary>
-    public class DrawableJudgement : Container
+    public class DrawableJudgement : PoolableDrawable
     {
-        private const float judgement_size = 80;
+        private const float judgement_size = 128;
 
-        private OsuColour colours;
+        [Resolved]
+        private OsuColour colours { get; set; }
 
-        protected readonly Judgement Judgement;
+        public JudgementResult Result { get; private set; }
+        public DrawableHitObject JudgedObject { get; private set; }
 
-        public readonly DrawableHitObject JudgedObject;
+        protected Container JudgementBody { get; private set; }
+        protected SpriteText JudgementText { get; private set; }
 
-        protected SpriteText JudgementText;
+        private SkinnableDrawable bodyDrawable;
+
+        /// <summary>
+        /// Duration of initial fade in.
+        /// </summary>
+        protected virtual double FadeInDuration => 100;
+
+        /// <summary>
+        /// Duration to wait until fade out begins. Defaults to <see cref="FadeInDuration"/>.
+        /// </summary>
+        protected virtual double FadeOutDelay => FadeInDuration;
 
         /// <summary>
         /// Creates a drawable which visualises a <see cref="Judgements.Judgement"/>.
         /// </summary>
-        /// <param name="judgement">The judgement to visualise.</param>
+        /// <param name="result">The judgement to visualise.</param>
         /// <param name="judgedObject">The object which was judged.</param>
-        public DrawableJudgement(Judgement judgement, DrawableHitObject judgedObject)
+        public DrawableJudgement(JudgementResult result, DrawableHitObject judgedObject)
+            : this()
         {
-            Judgement = judgement;
-            JudgedObject = judgedObject;
+            Apply(result, judgedObject);
+        }
 
+        public DrawableJudgement()
+        {
             Size = new Vector2(judgement_size);
+            Origin = Anchor.Centre;
         }
 
         [BackgroundDependencyLoader]
-        private void load(OsuColour colours)
+        private void load()
         {
-            this.colours = colours;
-
-            Child = new SkinnableDrawable($"Play/{Judgement.Result}", _ => JudgementText = new OsuSpriteText
-            {
-                Text = Judgement.Result.GetDescription().ToUpper(),
-                Font = @"Venera",
-                Colour = judgementColour(Judgement.Result),
-                Scale = new Vector2(0.85f, 1),
-                TextSize = 12
-            }, restrictSize: false);
+            prepareDrawables();
         }
 
-        protected override void LoadComplete()
+        protected virtual void ApplyHitAnimations()
         {
-            base.LoadComplete();
+            JudgementBody.ScaleTo(0.9f);
+            JudgementBody.ScaleTo(1, 500, Easing.OutElastic);
 
-            this.FadeInFromZero(100, Easing.OutQuint);
+            this.Delay(FadeOutDelay).FadeOut(400);
+        }
 
-            switch (Judgement.Result)
+        public virtual void Apply([NotNull] JudgementResult result, [CanBeNull] DrawableHitObject judgedObject)
+        {
+            Result = result;
+            JudgedObject = judgedObject;
+        }
+
+        protected override void PrepareForUse()
+        {
+            base.PrepareForUse();
+
+            Debug.Assert(Result != null);
+
+            prepareDrawables();
+
+            bodyDrawable.ResetAnimation();
+
+            this.FadeInFromZero(FadeInDuration, Easing.OutQuint);
+            JudgementBody.ScaleTo(1);
+            JudgementBody.RotateTo(0);
+            JudgementBody.MoveTo(Vector2.Zero);
+
+            switch (Result.Type)
             {
                 case HitResult.None:
                     break;
-                case HitResult.Miss:
-                    this.ScaleTo(1.6f);
-                    this.ScaleTo(1, 100, Easing.In);
 
-                    this.MoveToOffset(new Vector2(0, 100), 800, Easing.InQuint);
-                    this.RotateTo(40, 800, Easing.InQuint);
+                case HitResult.Miss:
+                    JudgementBody.ScaleTo(1.6f);
+                    JudgementBody.ScaleTo(1, 100, Easing.In);
+
+                    JudgementBody.MoveToOffset(new Vector2(0, 100), 800, Easing.InQuint);
+                    JudgementBody.RotateTo(40, 800, Easing.InQuint);
 
                     this.Delay(600).FadeOut(200);
                     break;
-                default:
-                    this.ScaleTo(0.9f);
-                    this.ScaleTo(1, 500, Easing.OutElastic);
 
-                    this.Delay(100).FadeOut(400);
+                default:
+                    ApplyHitAnimations();
                     break;
             }
 
             Expire(true);
         }
 
-        private Color4 judgementColour(HitResult judgement)
-        {
-            switch (judgement)
-            {
-                case HitResult.Perfect:
-                case HitResult.Great:
-                    return colours.Blue;
-                case HitResult.Ok:
-                case HitResult.Good:
-                    return colours.Green;
-                case HitResult.Meh:
-                    return colours.Yellow;
-                case HitResult.Miss:
-                    return colours.Red;
-            }
+        private HitResult? currentDrawableType;
 
-            return Color4.White;
+        private void prepareDrawables()
+        {
+            var type = Result?.Type ?? HitResult.Perfect; //TODO: better default type from ruleset
+
+            if (type == currentDrawableType)
+                return;
+
+            // sub-classes might have added their own children that would be removed here if .InternalChild was used.
+            if (JudgementBody != null)
+                RemoveInternal(JudgementBody);
+
+            AddInternal(JudgementBody = new Container
+            {
+                Anchor = Anchor.Centre,
+                Origin = Anchor.Centre,
+                RelativeSizeAxes = Axes.Both,
+                Child = bodyDrawable = new SkinnableDrawable(new GameplaySkinComponent<HitResult>(type), _ => JudgementText = new OsuSpriteText
+                {
+                    Text = type.GetDescription().ToUpperInvariant(),
+                    Font = OsuFont.Numeric.With(size: 20),
+                    Colour = colours.ForHitResult(type),
+                    Scale = new Vector2(0.85f, 1),
+                }, confineMode: ConfineMode.NoScaling)
+            });
+
+            currentDrawableType = type;
         }
     }
 }

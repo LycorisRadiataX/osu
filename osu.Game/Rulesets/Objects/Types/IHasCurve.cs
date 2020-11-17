@@ -1,32 +1,22 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using System.Collections.Generic;
-using OpenTK;
+using System;
+using osuTK;
 
 namespace osu.Game.Rulesets.Objects.Types
 {
-    /// <summary>
-    /// A HitObject that has a curve.
-    /// </summary>
+    [Obsolete("Use IHasPathWithRepeats instead.")] // can be removed 20201126
     public interface IHasCurve : IHasDistance, IHasRepeats
     {
         /// <summary>
         /// The curve.
         /// </summary>
-        SliderCurve Curve { get; }
-
-        /// <summary>
-        /// The control points that shape the curve.
-        /// </summary>
-        List<Vector2> ControlPoints { get; }
-
-        /// <summary>
-        /// The type of curve.
-        /// </summary>
-        CurveType CurveType { get; }
+        SliderPath Path { get; }
     }
 
+#pragma warning disable 618
+    [Obsolete("Use IHasPathWithRepeats instead.")] // can be removed 20201126
     public static class HasCurveExtensions
     {
         /// <summary>
@@ -36,7 +26,7 @@ namespace osu.Game.Rulesets.Objects.Types
         /// <param name="progress">[0, 1] where 0 is the start time of the <see cref="HitObject"/> and 1 is the end time of the <see cref="HitObject"/>.</param>
         /// <returns>The position on the curve.</returns>
         public static Vector2 CurvePositionAt(this IHasCurve obj, double progress)
-            => obj.Curve.PositionAt(obj.ProgressAt(progress));
+            => obj.Path.PositionAt(obj.ProgressAt(progress));
 
         /// <summary>
         /// Computes the progress along the curve relative to how much of the <see cref="HitObject"/> has been completed.
@@ -61,4 +51,5 @@ namespace osu.Game.Rulesets.Objects.Types
         public static int SpanAt(this IHasCurve obj, double progress)
             => (int)(progress * obj.SpanCount());
     }
+#pragma warning restore 618
 }

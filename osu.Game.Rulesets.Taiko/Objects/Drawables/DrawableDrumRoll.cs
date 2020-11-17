@@ -1,19 +1,21 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
+using System;
 using System.Linq;
 using osu.Framework.Allocation;
-using osu.Framework.MathUtils;
+using osu.Framework.Utils;
 using osu.Game.Graphics;
 using osu.Game.Rulesets.Objects.Drawables;
-using osu.Game.Rulesets.Taiko.Judgements;
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK.Graphics;
 using osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Scoring;
+using osu.Game.Skinning;
+using osuTK;
 
 namespace osu.Game.Rulesets.Taiko.Objects.Drawables
 {
@@ -29,52 +31,93 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
         /// </summary>
         private int rollingHits;
 
-        public DrawableDrumRoll(DrumRoll drumRoll)
-            : base(drumRoll)
-        {
-            RelativeSizeAxes = Axes.Y;
-
-            Container<DrawableDrumRollTick> tickContainer;
-            MainPiece.Add(tickContainer = new Container<DrawableDrumRollTick> { RelativeSizeAxes = Axes.Both });
-
-            foreach (var tick in drumRoll.NestedHitObjects.OfType<DrumRollTick>())
-            {
-                var newTick = new DrawableDrumRollTick(tick);
-                newTick.OnJudgement += onTickJudgement;
-
-                AddNested(newTick);
-                tickContainer.Add(newTick);
-            }
-        }
-
-        protected override TaikoPiece CreateMainPiece() => new ElongatedCirclePiece();
-
-        public override bool OnPressed(TaikoAction action) => false;
+        private Container tickContainer;
 
         private Color4 colourIdle;
         private Color4 colourEngaged;
 
+        public DrawableDrumRoll(DrumRoll drumRoll)
+            : base(drumRoll)
+        {
+            RelativeSizeAxes = Axes.Y;
+        }
+
         [BackgroundDependencyLoader]
         private void load(OsuColour colours)
         {
-            MainPiece.AccentColour = colourIdle = colours.YellowDark;
+            colourIdle = colours.YellowDark;
             colourEngaged = colours.YellowDarker;
+
+            Content.Add(tickContainer = new Container
+            {
+                RelativeSizeAxes = Axes.Both,
+                Depth = float.MinValue
+            });
         }
 
-        private void onTickJudgement(DrawableHitObject obj, Judgement judgement)
+        protected override void LoadComplete()
         {
-            if (judgement.Result > HitResult.Miss)
+            base.LoadComplete();
+
+            OnNewResult += onNewResult;
+        }
+
+        protected override void RecreatePieces()
+        {
+            base.RecreatePieces();
+            updateColour();
+        }
+
+        protected override void AddNestedHitObject(DrawableHitObject hitObject)
+        {
+            base.AddNestedHitObject(hitObject);
+
+            switch (hitObject)
+            {
+                case DrawableDrumRollTick tick:
+                    tickContainer.Add(tick);
+                    break;
+            }
+        }
+
+        protected override void ClearNestedHitObjects()
+        {
+            base.ClearNestedHitObjects();
+            tickContainer.Clear();
+        }
+
+        protected override DrawableHitObject CreateNestedHitObject(HitObject hitObject)
+        {
+            switch (hitObject)
+            {
+                case DrumRollTick tick:
+                    return new DrawableDrumRollTick(tick);
+            }
+
+            return base.CreateNestedHitObject(hitObject);
+        }
+
+        protected override SkinnableDrawable CreateMainPiece() => new SkinnableDrawable(new TaikoSkinComponent(TaikoSkinComponents.DrumRollBody),
+            _ => new ElongatedCirclePiece());
+
+        public override bool OnPressed(TaikoAction action) => false;
+
+        private void onNewResult(DrawableHitObject obj, JudgementResult result)
+        {
+            if (!(obj is DrawableDrumRollTick))
+                return;
+
+            if (result.IsHit)
                 rollingHits++;
             else
                 rollingHits--;
 
-            rollingHits = MathHelper.Clamp(rollingHits, 0, rolling_hits_for_engaged_colour);
+            rollingHits = Math.Clamp(rollingHits, 0, rolling_hits_for_engaged_colour);
 
-            Color4 newColour = Interpolation.ValueAt((float)rollingHits / rolling_hits_for_engaged_colour, colourIdle, colourEngaged, 0, 1);
-            MainPiece.FadeAccent(newColour, 100);
+            updateColour();
         }
 
-        protected override void CheckForJudgements(bool userTriggered, double timeOffset)
+        protected override void CheckForResult(bool userTriggered, double timeOffset)
         {
             if (userTriggered)
                 return;
@@ -83,25 +126,58 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
                 return;
 
             int countHit = NestedHitObjects.Count(o => o.IsHit);
+
             if (countHit >= HitObject.RequiredGoodHits)
             {
-                AddJudgement(new TaikoJudgement { Result = countHit >= HitObject.RequiredGreatHits ? HitResult.Great : HitResult.Good });
-                if (HitObject.IsStrong)
-                    AddJudgement(new TaikoStrongHitJudgement());
+                ApplyResult(r => r.Type = countHit >= HitObject.RequiredGreatHits ? HitResult.Great : HitResult.Ok);
             }
             else
-                AddJudgement(new TaikoJudgement { Result = HitResult.Miss });
+                ApplyResult(r => r.Type = r.Judgement.MinResult);
         }
 
-        protected override void UpdateState(ArmedState state)
+        protected override void UpdateHitStateTransforms(ArmedState state)
         {
             switch (state)
             {
                 case ArmedState.Hit:
                 case ArmedState.Miss:
-                    this.FadeOut(100).Expire();
+                    this.FadeOut(100);
                     break;
             }
+        }
+
+        protected override void Update()
+        {
+            base.Update();
+
+            OriginPosition = new Vector2(DrawHeight);
+            Content.X = DrawHeight / 2;
+        }
+
+        protected override DrawableStrongNestedHit CreateStrongHit(StrongHitObject hitObject) => new StrongNestedHit(hitObject, this);
+
+        private void updateColour()
+        {
+            Color4 newColour = Interpolation.ValueAt((float)rollingHits / rolling_hits_for_engaged_colour, colourIdle, colourEngaged, 0, 1);
+            (MainPiece.Drawable as IHasAccentColour)?.FadeAccent(newColour, 100);
+        }
+
+        private class StrongNestedHit : DrawableStrongNestedHit
+        {
+            public StrongNestedHit(StrongHitObject strong, DrawableDrumRoll drumRoll)
+                : base(strong, drumRoll)
+            {
+            }
+
+            protected override void CheckForResult(bool userTriggered, double timeOffset)
+            {
+                if (!MainObject.Judged)
+                    return;
+
+                ApplyResult(r => r.Type = MainObject.IsHit ? r.Judgement.MaxResult : r.Judgement.MinResult);
+            }
+
+            public override bool OnPressed(TaikoAction action) => false;
         }
     }
 }

@@ -1,73 +1,75 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using osu.Framework.Configuration;
-using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Online.API.Requests;
 using osu.Game.Users;
 using System;
-using System.Linq;
+using osu.Framework.Bindables;
+using osu.Framework.Graphics;
+using osu.Game.Online.API.Requests.Responses;
+using System.Collections.Generic;
+using osu.Game.Online.API;
+using osu.Framework.Allocation;
 
 namespace osu.Game.Overlays.Profile.Sections.Ranks
 {
-    public class PaginatedScoreContainer : PaginatedContainer
+    public class PaginatedScoreContainer : PaginatedContainer<APILegacyScoreInfo>
     {
-        private readonly bool includeWeight;
         private readonly ScoreType type;
 
-        public PaginatedScoreContainer(ScoreType type, Bindable<User> user, string header, string missing, bool includeWeight = false)
-            : base(user, header, missing)
+        public PaginatedScoreContainer(ScoreType type, Bindable<User> user, string headerText, CounterVisibilityState counterVisibilityState, string missingText = "")
+            : base(user, headerText, missingText, counterVisibilityState)
         {
             this.type = type;
-            this.includeWeight = includeWeight;
 
             ItemsPerPage = 5;
+        }
 
+        [BackgroundDependencyLoader]
+        private void load()
+        {
             ItemsContainer.Direction = FillDirection.Vertical;
         }
 
-        protected override void ShowMore()
+        protected override int GetCount(User user)
         {
-            base.ShowMore();
-
-            var req = new GetUserScoresRequest(User.Value.Id, type, VisiblePages++ * ItemsPerPage);
-
-            req.Success += scores =>
+            switch (type)
             {
-                foreach (var s in scores)
-                    s.ApplyRuleset(Rulesets.GetRuleset(s.OnlineRulesetID));
+                case ScoreType.Firsts:
+                    return user.ScoresFirstCount;
 
-                ShowMoreButton.FadeTo(scores.Count == ItemsPerPage ? 1 : 0);
-                ShowMoreLoading.Hide();
+                default:
+                    return 0;
+            }
+        }
 
-                if (!scores.Any() && VisiblePages == 1)
-                {
-                    MissingText.Show();
-                    return;
-                }
+        protected override void OnItemsReceived(List<APILegacyScoreInfo> items)
+        {
+            if (VisiblePages == 0)
+                drawableItemIndex = 0;
 
-                MissingText.Hide();
+            base.OnItemsReceived(items);
 
-                foreach (OnlineScore score in scores)
-                {
-                    DrawableProfileScore drawableScore;
+            if (type == ScoreType.Recent)
+                SetCount(items.Count);
+        }
 
-                    switch (type)
-                    {
-                        default:
-                            drawableScore = new DrawablePerformanceScore(score, includeWeight ? Math.Pow(0.95, ItemsContainer.Count) : (double?)null);
-                            break;
-                        case ScoreType.Recent:
-                            drawableScore = new DrawableTotalScore(score);
-                            break;
-                    }
+        protected override APIRequest<List<APILegacyScoreInfo>> CreateRequest() =>
+            new GetUserScoresRequest(User.Value.Id, type, VisiblePages++, ItemsPerPage);
 
-                    ItemsContainer.Add(drawableScore);
-                }
-            };
+        private int drawableItemIndex;
 
-            Api.Queue(req);
+        protected override Drawable CreateDrawableItem(APILegacyScoreInfo model)
+        {
+            switch (type)
+            {
+                default:
+                    return new DrawableProfileScore(model.CreateScoreInfo(Rulesets));
+
+                case ScoreType.Best:
+                    return new DrawableProfileWeightedScore(model.CreateScoreInfo(Rulesets), Math.Pow(0.95, drawableItemIndex++));
+            }
         }
     }
 }

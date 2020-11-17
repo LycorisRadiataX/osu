@@ -1,9 +1,10 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using osu.Framework.Allocation;
 using osu.Framework.Configuration;
 using osu.Framework.Graphics;
+using osu.Framework.Platform;
 using osu.Game.Configuration;
 
 namespace osu.Game.Overlays.Settings.Sections.Graphics
@@ -22,12 +23,17 @@ namespace osu.Game.Overlays.Settings.Sections.Graphics
                 new SettingsEnumDropdown<FrameSync>
                 {
                     LabelText = "Frame limiter",
-                    Bindable = config.GetBindable<FrameSync>(FrameworkSetting.FrameSync)
+                    Current = config.GetBindable<FrameSync>(FrameworkSetting.FrameSync)
+                },
+                new SettingsEnumDropdown<ExecutionMode>
+                {
+                    LabelText = "Threading mode",
+                    Current = config.GetBindable<ExecutionMode>(FrameworkSetting.ExecutionMode)
                 },
                 new SettingsCheckbox
                 {
                     LabelText = "Show FPS",
-                    Bindable = osuConfig.GetBindable<bool>(OsuSetting.ShowFpsDisplay)
+                    Current = osuConfig.GetBindable<bool>(OsuSetting.ShowFpsDisplay)
                 },
             };
         }

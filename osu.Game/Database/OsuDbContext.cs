@@ -1,16 +1,17 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using osu.Framework.Logging;
+using osu.Framework.Statistics;
 using osu.Game.Beatmaps;
 using osu.Game.Configuration;
 using osu.Game.IO;
 using osu.Game.Rulesets;
+using osu.Game.Scoring;
 using DatabasedKeyBinding = osu.Game.Input.Bindings.DatabasedKeyBinding;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 using osu.Game.Skinning;
@@ -28,15 +29,21 @@ namespace osu.Game.Database
         public DbSet<FileInfo> FileInfo { get; set; }
         public DbSet<RulesetInfo> RulesetInfo { get; set; }
         public DbSet<SkinInfo> SkinInfo { get; set; }
+        public DbSet<ScoreInfo> ScoreInfo { get; set; }
 
         private readonly string connectionString;
 
         private static readonly Lazy<OsuDbLoggerFactory> logger = new Lazy<OsuDbLoggerFactory>(() => new OsuDbLoggerFactory());
 
+        private static readonly GlobalStatistic<int> contexts = GlobalStatistics.Get<int>("Database", "Contexts");
+
         static OsuDbContext()
         {
             // required to initialise native SQLite libraries on some platforms.
             SQLitePCL.Batteries_V2.Init();
+
+            // https://github.com/aspnet/EntityFrameworkCore/issues/9994#issuecomment-508588678
+            SQLitePCL.raw.sqlite3_config(2 /*SQLITE_CONFIG_MULTITHREAD*/);
         }
 
         /// <summary>
@@ -59,12 +66,45 @@ namespace osu.Game.Database
             this.connectionString = connectionString;
 
             var connection = Database.GetDbConnection();
-            connection.Open();
-            using (var cmd = connection.CreateCommand())
+
+            try
             {
-                cmd.CommandText = "PRAGMA journal_mode=WAL;";
-                cmd.ExecuteNonQuery();
+                connection.Open();
+
+                using (var cmd = connection.CreateCommand())
+                {
+                    cmd.CommandText = "PRAGMA journal_mode=WAL;";
+                    cmd.ExecuteNonQuery();
+                }
             }
+            catch
+            {
+                connection.Close();
+                throw;
+            }
+
+            contexts.Value++;
+        }
+
+        ~OsuDbContext()
+        {
+            // DbContext does not contain a finalizer (https://github.com/aspnet/EntityFrameworkCore/issues/8872)
+            // This is used to clean up previous contexts when fresh contexts are exposed via DatabaseContextFactory
+            Dispose();
+        }
+
+        private bool isDisposed;
+
+        public override void Dispose()
+        {
+            if (isDisposed) return;
+
+            isDisposed = true;
+
+            base.Dispose();
+
+            contexts.Value--;
+            GC.SuppressFinalize(this);
         }
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -83,12 +123,15 @@ namespace osu.Game.Database
             base.OnModelCreating(modelBuilder);
 
             modelBuilder.Entity<BeatmapInfo>().HasIndex(b => b.OnlineBeatmapID).IsUnique();
-            modelBuilder.Entity<BeatmapInfo>().HasIndex(b => b.MD5Hash).IsUnique();
-            modelBuilder.Entity<BeatmapInfo>().HasIndex(b => b.Hash).IsUnique();
+            modelBuilder.Entity<BeatmapInfo>().HasIndex(b => b.MD5Hash);
+            modelBuilder.Entity<BeatmapInfo>().HasIndex(b => b.Hash);
 
             modelBuilder.Entity<BeatmapSetInfo>().HasIndex(b => b.OnlineBeatmapSetID).IsUnique();
             modelBuilder.Entity<BeatmapSetInfo>().HasIndex(b => b.DeletePending);
             modelBuilder.Entity<BeatmapSetInfo>().HasIndex(b => b.Hash).IsUnique();
+
+            modelBuilder.Entity<SkinInfo>().HasIndex(b => b.Hash).IsUnique();
+            modelBuilder.Entity<SkinInfo>().HasIndex(b => b.DeletePending);
 
             modelBuilder.Entity<DatabasedKeyBinding>().HasIndex(b => new { b.RulesetID, b.Variant });
             modelBuilder.Entity<DatabasedKeyBinding>().HasIndex(b => b.IntAction);
@@ -102,19 +145,8 @@ namespace osu.Game.Database
             modelBuilder.Entity<RulesetInfo>().HasIndex(b => b.ShortName).IsUnique();
 
             modelBuilder.Entity<BeatmapInfo>().HasOne(b => b.BaseDifficulty);
-        }
 
-        public IDbContextTransaction BeginTransaction()
-        {
-            // return Database.BeginTransaction();
-            return null;
-        }
-
-        public int SaveChanges(IDbContextTransaction transaction = null)
-        {
-            var ret = base.SaveChanges();
-            if (ret > 0) transaction?.Commit();
-            return ret;
+            modelBuilder.Entity<ScoreInfo>().HasIndex(b => b.OnlineScoreID).IsUnique();
         }
 
         private class OsuDbLoggerFactory : ILoggerFactory
@@ -134,19 +166,6 @@ namespace osu.Game.Database
                 // no-op. called by tooling.
             }
 
-            private class OsuDbLoggerProvider : ILoggerProvider
-            {
-                #region Disposal
-
-                public void Dispose()
-                {
-                }
-
-                #endregion
-
-                public ILogger CreateLogger(string categoryName) => new OsuDbLogger();
-            }
-
             private class OsuDbLogger : ILogger
             {
                 public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
@@ -161,9 +180,11 @@ namespace osu.Game.Database
                         default:
                             frameworkLogLevel = Framework.Logging.LogLevel.Debug;
                             break;
+
                         case LogLevel.Warning:
                             frameworkLogLevel = Framework.Logging.LogLevel.Important;
                             break;
+
                         case LogLevel.Error:
                         case LogLevel.Critical:
                             frameworkLogLevel = Framework.Logging.LogLevel.Error;
@@ -186,24 +207,6 @@ namespace osu.Game.Database
             }
         }
 
-        public void Migrate()
-        {
-            try
-            {
-                Database.Migrate();
-            }
-            catch (Exception e)
-            {
-                throw new MigrationFailedException(e);
-            }
-        }
-    }
-
-    public class MigrationFailedException : Exception
-    {
-        public MigrationFailedException(Exception exception)
-            : base("sqlite-net migration failed", exception)
-        {
-        }
+        public void Migrate() => Database.Migrate();
     }
 }

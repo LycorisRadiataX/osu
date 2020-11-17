@@ -1,68 +1,74 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
-using osu.Framework.MathUtils;
+using osu.Framework.Utils;
 using osu.Game.Rulesets.Objects;
-using osu.Game.Rulesets.Objects.Types;
 using osu.Game.Rulesets.Osu.Objects;
 using osu.Game.Tests.Beatmaps;
-using OpenTK;
 
 namespace osu.Game.Rulesets.Osu.Tests
 {
-    internal class OsuBeatmapConversionTest : BeatmapConversionTest<ConvertValue>
+    [TestFixture]
+    [Timeout(10000)]
+    public class OsuBeatmapConversionTest : BeatmapConversionTest<ConvertValue>
     {
         protected override string ResourceAssembly => "osu.Game.Rulesets.Osu";
 
         [TestCase("basic")]
         [TestCase("colinear-perfect-curve")]
-        public new void Test(string name)
-        {
-            base.Test(name);
-        }
+        [TestCase("slider-ticks")]
+        [TestCase("repeat-slider")]
+        [TestCase("uneven-repeat-slider")]
+        [TestCase("old-stacking")]
+        public void Test(string name) => base.Test(name);
 
         protected override IEnumerable<ConvertValue> CreateConvertValue(HitObject hitObject)
         {
-            var startPosition = (hitObject as IHasPosition)?.Position ?? new Vector2(256, 192);
-            var endPosition = (hitObject as Slider)?.EndPosition ?? startPosition;
-
-            yield return new ConvertValue
+            switch (hitObject)
             {
-                StartTime = hitObject.StartTime,
-                EndTime = (hitObject as IHasEndTime)?.EndTime ?? hitObject.StartTime,
-                StartX = startPosition.X,
-                StartY = startPosition.Y,
-                EndX = endPosition.X,
-                EndY = endPosition.Y
+                case Slider slider:
+                    foreach (var nested in slider.NestedHitObjects)
+                        yield return createConvertValue((OsuHitObject)nested);
+
+                    break;
+
+                default:
+                    yield return createConvertValue((OsuHitObject)hitObject);
+
+                    break;
+            }
+
+            static ConvertValue createConvertValue(OsuHitObject obj) => new ConvertValue
+            {
+                StartTime = obj.StartTime,
+                EndTime = obj.GetEndTime(),
+                X = obj.StackedPosition.X,
+                Y = obj.StackedPosition.Y
             };
         }
 
         protected override Ruleset CreateRuleset() => new OsuRuleset();
     }
 
-    internal struct ConvertValue : IEquatable<ConvertValue>
+    public struct ConvertValue : IEquatable<ConvertValue>
     {
         /// <summary>
-        /// A sane value to account for osu!stable using ints everwhere.
+        /// A sane value to account for osu!stable using <see cref="int"/>s everywhere.
         /// </summary>
         private const double conversion_lenience = 2;
 
         public double StartTime;
         public double EndTime;
-        public float StartX;
-        public float StartY;
-        public float EndX;
-        public float EndY;
+        public float X;
+        public float Y;
 
         public bool Equals(ConvertValue other)
-            => Precision.AlmostEquals(StartTime, other.StartTime)
+            => Precision.AlmostEquals(StartTime, other.StartTime, conversion_lenience)
                && Precision.AlmostEquals(EndTime, other.EndTime, conversion_lenience)
-               && Precision.AlmostEquals(StartX, other.StartX)
-               && Precision.AlmostEquals(StartY, other.StartY, conversion_lenience)
-               && Precision.AlmostEquals(EndX, other.EndX, conversion_lenience)
-               && Precision.AlmostEquals(EndY, other.EndY, conversion_lenience);
+               && Precision.AlmostEquals(X, other.X, conversion_lenience)
+               && Precision.AlmostEquals(Y, other.Y, conversion_lenience);
     }
 }

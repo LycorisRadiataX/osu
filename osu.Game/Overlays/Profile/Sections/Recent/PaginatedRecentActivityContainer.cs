@@ -1,48 +1,35 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using osu.Framework.Configuration;
 using osu.Framework.Graphics;
 using osu.Game.Online.API.Requests;
 using osu.Game.Users;
-using System.Linq;
+using osu.Framework.Bindables;
+using osu.Game.Online.API.Requests.Responses;
+using osu.Game.Online.API;
+using System.Collections.Generic;
+using osuTK;
+using osu.Framework.Allocation;
 
 namespace osu.Game.Overlays.Profile.Sections.Recent
 {
-    public class PaginatedRecentActivityContainer : PaginatedContainer
+    public class PaginatedRecentActivityContainer : PaginatedContainer<APIRecentActivity>
     {
-        public PaginatedRecentActivityContainer(Bindable<User> user, string header, string missing)
-            : base(user, header, missing)
+        public PaginatedRecentActivityContainer(Bindable<User> user)
+            : base(user, missingText: "This user hasn't done anything notable recently!")
         {
-            ItemsPerPage = 5;
+            ItemsPerPage = 10;
         }
 
-        protected override void ShowMore()
+        [BackgroundDependencyLoader]
+        private void load()
         {
-            base.ShowMore();
-
-            var req = new GetUserRecentActivitiesRequest(User.Value.Id, VisiblePages++ * ItemsPerPage);
-
-            req.Success += activities =>
-            {
-                ShowMoreButton.FadeTo(activities.Count == ItemsPerPage ? 1 : 0);
-                ShowMoreLoading.Hide();
-
-                if (!activities.Any() && VisiblePages == 1)
-                {
-                    MissingText.Show();
-                    return;
-                }
-
-                MissingText.Hide();
-
-                foreach (RecentActivity activity in activities)
-                {
-                    ItemsContainer.Add(new DrawableRecentActivity(activity));
-                }
-            };
-
-            Api.Queue(req);
+            ItemsContainer.Spacing = new Vector2(0, 8);
         }
+
+        protected override APIRequest<List<APIRecentActivity>> CreateRequest() =>
+            new GetUserRecentActivitiesRequest(User.Value.Id, VisiblePages++, ItemsPerPage);
+
+        protected override Drawable CreateDrawableItem(APIRecentActivity model) => new DrawableRecentActivity(model);
     }
 }

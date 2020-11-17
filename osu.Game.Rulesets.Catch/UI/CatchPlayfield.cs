@@ -1,63 +1,68 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Beatmaps;
 using osu.Game.Rulesets.Catch.Objects;
-using osu.Game.Rulesets.Catch.Objects.Drawable;
+using osu.Game.Rulesets.Catch.Objects.Drawables;
 using osu.Game.Rulesets.Judgements;
 using osu.Game.Rulesets.Objects.Drawables;
 using osu.Game.Rulesets.UI.Scrolling;
+using osuTK;
 
 namespace osu.Game.Rulesets.Catch.UI
 {
     public class CatchPlayfield : ScrollingPlayfield
     {
-        public const float BASE_WIDTH = 512;
+        /// <summary>
+        /// The width of the playfield.
+        /// The horizontal movement of the catcher is confined in the area of this width.
+        /// </summary>
+        public const float WIDTH = 512;
 
-        protected override Container<Drawable> Content => content;
-        private readonly Container<Drawable> content;
+        /// <summary>
+        /// The center position of the playfield.
+        /// </summary>
+        public const float CENTER_X = WIDTH / 2;
 
-        private readonly CatcherArea catcherArea;
+        internal readonly CatcherArea CatcherArea;
 
-        public CatchPlayfield(BeatmapDifficulty difficulty, Func<CatchHitObject, DrawableHitObject<CatchHitObject>> getVisualRepresentation)
-            : base(ScrollingDirection.Down, BASE_WIDTH)
+        public override bool ReceivePositionalInputAt(Vector2 screenSpacePos) =>
+            // only check the X position; handle all vertical space.
+            base.ReceivePositionalInputAt(new Vector2(screenSpacePos.X, ScreenSpaceDrawQuad.Centre.Y));
+
+        public CatchPlayfield(BeatmapDifficulty difficulty, Func<CatchHitObject, DrawableHitObject<CatchHitObject>> createDrawableRepresentation)
         {
-            Container explodingFruitContainer;
-
-            Anchor = Anchor.TopCentre;
-            Origin = Anchor.TopCentre;
-
-            base.Content.Anchor = Anchor.BottomLeft;
-            base.Content.Origin = Anchor.BottomLeft;
-
-            base.Content.AddRange(new Drawable[]
+            var explodingFruitContainer = new Container
             {
-                explodingFruitContainer = new Container
-                {
-                    RelativeSizeAxes = Axes.Both,
-                },
-                catcherArea = new CatcherArea(difficulty)
-                {
-                    GetVisualRepresentation = getVisualRepresentation,
-                    ExplodingFruitTarget = explodingFruitContainer,
-                    Anchor = Anchor.BottomLeft,
-                    Origin = Anchor.TopLeft,
-                },
-                content = new Container<Drawable>
-                {
-                    RelativeSizeAxes = Axes.Both,
-                },
-            });
+                RelativeSizeAxes = Axes.Both,
+            };
+
+            CatcherArea = new CatcherArea(difficulty)
+            {
+                CreateDrawableRepresentation = createDrawableRepresentation,
+                ExplodingFruitTarget = explodingFruitContainer,
+                Anchor = Anchor.BottomLeft,
+                Origin = Anchor.TopLeft,
+            };
+
+            InternalChildren = new[]
+            {
+                explodingFruitContainer,
+                CatcherArea.MovableCatcher.CreateProxiedContent(),
+                HitObjectContainer,
+                CatcherArea,
+            };
         }
 
-        public bool CheckIfWeCanCatch(CatchHitObject obj) => catcherArea.AttemptCatch(obj);
+        public bool CheckIfWeCanCatch(CatchHitObject obj) => CatcherArea.AttemptCatch(obj);
 
         public override void Add(DrawableHitObject h)
         {
-            h.OnJudgement += onJudgement;
+            h.OnNewResult += onNewResult;
+            h.OnRevertResult += onRevertResult;
 
             base.Add(h);
 
@@ -65,6 +70,10 @@ namespace osu.Game.Rulesets.Catch.UI
             fruit.CheckPosition = CheckIfWeCanCatch;
         }
 
-        private void onJudgement(DrawableHitObject judgedObject, Judgement judgement) => catcherArea.OnJudgement((DrawableCatchHitObject)judgedObject, judgement);
+        private void onNewResult(DrawableHitObject judgedObject, JudgementResult result)
+            => CatcherArea.OnNewResult((DrawableCatchHitObject)judgedObject, result);
+
+        private void onRevertResult(DrawableHitObject judgedObject, JudgementResult result)
+            => CatcherArea.OnRevertResult((DrawableCatchHitObject)judgedObject, result);
     }
 }

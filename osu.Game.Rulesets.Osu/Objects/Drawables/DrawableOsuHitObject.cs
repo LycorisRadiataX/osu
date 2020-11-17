@@ -1,72 +1,103 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using System.ComponentModel;
+using System;
+using osu.Framework.Allocation;
+using osu.Framework.Bindables;
 using osu.Game.Rulesets.Objects.Drawables;
 using osu.Framework.Graphics;
-using System.Linq;
-using osu.Game.Rulesets.Objects.Types;
-using osu.Game.Skinning;
-using OpenTK.Graphics;
+using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Osu.Judgements;
+using osu.Game.Graphics.Containers;
+using osu.Game.Rulesets.Objects;
+using osu.Game.Rulesets.Osu.UI;
+using osuTK;
 
 namespace osu.Game.Rulesets.Osu.Objects.Drawables
 {
     public class DrawableOsuHitObject : DrawableHitObject<OsuHitObject>
     {
-        public override bool IsPresent => base.IsPresent || State.Value == ArmedState.Idle && Time.Current >= HitObject.StartTime - HitObject.TimePreempt;
+        public readonly IBindable<Vector2> PositionBindable = new Bindable<Vector2>();
+        public readonly IBindable<int> StackHeightBindable = new Bindable<int>();
+        public readonly IBindable<float> ScaleBindable = new BindableFloat();
+        public readonly IBindable<int> IndexInCurrentComboBindable = new Bindable<int>();
+
+        // Must be set to update IsHovered as it's used in relax mdo to detect osu hit objects.
+        public override bool HandlePositionalInput => true;
+
+        protected override float SamplePlaybackPosition => HitObject.X / OsuPlayfield.BASE_SIZE.X;
+
+        /// <summary>
+        /// Whether this <see cref="DrawableOsuHitObject"/> can be hit, given a time value.
+        /// If non-null, judgements will be ignored (resulting in a shake) whilst the function returns false.
+        /// </summary>
+        public Func<DrawableHitObject, double, bool> CheckHittable;
+
+        private ShakeContainer shakeContainer;
 
         protected DrawableOsuHitObject(OsuHitObject hitObject)
             : base(hitObject)
         {
+        }
+
+        [BackgroundDependencyLoader]
+        private void load()
+        {
             Alpha = 0;
-        }
 
-        protected sealed override void UpdateState(ArmedState state)
-        {
-            double transformTime = HitObject.StartTime - HitObject.TimePreempt;
-
-            base.ApplyTransformsAt(transformTime, true);
-            base.ClearTransformsAfter(transformTime, true);
-
-            using (BeginAbsoluteSequence(transformTime, true))
+            base.AddInternal(shakeContainer = new ShakeContainer
             {
-                UpdatePreemptState();
-
-                using (BeginDelayedSequence(HitObject.TimePreempt + (Judgements.FirstOrDefault()?.TimeOffset ?? 0), true))
-                    UpdateCurrentState(state);
-            }
+                ShakeDuration = 30,
+                RelativeSizeAxes = Axes.Both
+            });
         }
 
-        protected override void SkinChanged(ISkinSource skin, bool allowFallback)
+        protected override void OnApply(HitObject hitObject)
         {
-            base.SkinChanged(skin, allowFallback);
+            base.OnApply(hitObject);
 
-            if (HitObject is IHasComboInformation combo)
-                AccentColour = skin.GetValue<SkinConfiguration, Color4>(s => s.ComboColours.Count > 0 ? s.ComboColours[combo.ComboIndex % s.ComboColours.Count] : (Color4?)null) ?? Color4.White;
+            IndexInCurrentComboBindable.BindTo(HitObject.IndexInCurrentComboBindable);
+            PositionBindable.BindTo(HitObject.PositionBindable);
+            StackHeightBindable.BindTo(HitObject.StackHeightBindable);
+            ScaleBindable.BindTo(HitObject.ScaleBindable);
         }
 
-        protected virtual void UpdatePreemptState() => this.FadeIn(HitObject.TimeFadein);
-
-        protected virtual void UpdateCurrentState(ArmedState state)
+        protected override void OnFree(HitObject hitObject)
         {
+            base.OnFree(hitObject);
+
+            IndexInCurrentComboBindable.UnbindFrom(HitObject.IndexInCurrentComboBindable);
+            PositionBindable.UnbindFrom(HitObject.PositionBindable);
+            StackHeightBindable.UnbindFrom(HitObject.StackHeightBindable);
+            ScaleBindable.UnbindFrom(HitObject.ScaleBindable);
         }
 
-        // Todo: At some point we need to move these to DrawableHitObject after ensuring that all other Rulesets apply
-        // transforms in the same way and don't rely on them not being cleared
-        public override void ClearTransformsAfter(double time, bool propagateChildren = false, string targetMember = null) { }
-        public override void ApplyTransformsAt(double time, bool propagateChildren = false) { }
+        // Forward all internal management to shakeContainer.
+        // This is a bit ugly but we don't have the concept of InternalContent so it'll have to do for now. (https://github.com/ppy/osu-framework/issues/1690)
+        protected override void AddInternal(Drawable drawable) => shakeContainer.Add(drawable);
+        protected override void ClearInternal(bool disposeChildren = true) => shakeContainer.Clear(disposeChildren);
+        protected override bool RemoveInternal(Drawable drawable) => shakeContainer.Remove(drawable);
+
+        protected sealed override double InitialLifetimeOffset => HitObject.TimePreempt;
 
         private OsuInputManager osuActionInputManager;
-        internal OsuInputManager OsuActionInputManager => osuActionInputManager ?? (osuActionInputManager = GetContainingInputManager() as OsuInputManager);
-    }
+        internal OsuInputManager OsuActionInputManager => osuActionInputManager ??= GetContainingInputManager() as OsuInputManager;
 
-    public enum ComboResult
-    {
-        [Description(@"")]
-        None,
-        [Description(@"Good")]
-        Good,
-        [Description(@"Amazing")]
-        Perfect
+        public virtual void Shake(double maximumLength) => shakeContainer.Shake(maximumLength);
+
+        protected override void UpdateInitialTransforms()
+        {
+            base.UpdateInitialTransforms();
+
+            // Manually set to reduce the number of future alive objects to a bare minimum.
+            LifetimeStart = HitObject.StartTime - HitObject.TimePreempt;
+        }
+
+        /// <summary>
+        /// Causes this <see cref="DrawableOsuHitObject"/> to get missed, disregarding all conditions in implementations of <see cref="DrawableHitObject.CheckForResult"/>.
+        /// </summary>
+        public void MissForcefully() => ApplyResult(r => r.Type = r.Judgement.MinResult);
+
+        protected override JudgementResult CreateResult(Judgement judgement) => new OsuJudgementResult(HitObject, judgement);
     }
 }

@@ -1,166 +1,73 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using Newtonsoft.Json;
 using osu.Game.Beatmaps;
 using osu.Game.Rulesets;
-using osu.Game.Users;
-using osu.Game.Rulesets.Replays;
-using osu.Game.Rulesets.Scoring;
 using osu.Game.Screens.Select.Leaderboards;
-using osu.Framework.IO.Network;
+using osu.Game.Online.API.Requests.Responses;
+using osu.Game.Rulesets.Mods;
+using System.Text;
+using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace osu.Game.Online.API.Requests
 {
-    public class GetScoresRequest : APIRequest<GetScoresResponse>
+    public class GetScoresRequest : APIRequest<APILegacyScores>
     {
         private readonly BeatmapInfo beatmap;
-        private readonly LeaderboardScope scope;
+        private readonly BeatmapLeaderboardScope scope;
         private readonly RulesetInfo ruleset;
+        private readonly IEnumerable<Mod> mods;
 
-        public GetScoresRequest(BeatmapInfo beatmap, RulesetInfo ruleset, LeaderboardScope scope = LeaderboardScope.Global)
+        public GetScoresRequest(BeatmapInfo beatmap, RulesetInfo ruleset, BeatmapLeaderboardScope scope = BeatmapLeaderboardScope.Global, IEnumerable<Mod> mods = null)
         {
             if (!beatmap.OnlineBeatmapID.HasValue)
                 throw new InvalidOperationException($"Cannot lookup a beatmap's scores without having a populated {nameof(BeatmapInfo.OnlineBeatmapID)}.");
 
-            if (scope == LeaderboardScope.Local)
+            if (scope == BeatmapLeaderboardScope.Local)
                 throw new InvalidOperationException("Should not attempt to request online scores for a local scoped leaderboard");
 
             this.beatmap = beatmap;
             this.scope = scope;
             this.ruleset = ruleset ?? throw new ArgumentNullException(nameof(ruleset));
+            this.mods = mods ?? Array.Empty<Mod>();
 
             Success += onSuccess;
         }
 
-        private void onSuccess(GetScoresResponse r)
+        private void onSuccess(APILegacyScores r)
         {
-            foreach (OnlineScore score in r.Scores)
-                score.ApplyBeatmap(beatmap);
-        }
+            Debug.Assert(ruleset.ID != null, "ruleset.ID != null");
 
-        protected override WebRequest CreateWebRequest()
-        {
-            var req = base.CreateWebRequest();
-
-            req.Timeout = 30000;
-            req.AddParameter(@"type", scope.ToString().ToLowerInvariant());
-            req.AddParameter(@"mode", ruleset.ShortName);
-
-            return req;
-        }
-
-        protected override string Target => $@"beatmaps/{beatmap.OnlineBeatmapID}/scores";
-    }
-
-    public class GetScoresResponse
-    {
-        [JsonProperty(@"scores")]
-        public IEnumerable<OnlineScore> Scores;
-    }
-
-    public class OnlineScore : Score
-    {
-        [JsonProperty(@"score")]
-        private double totalScore
-        {
-            set { TotalScore = value; }
-        }
-
-        [JsonProperty(@"max_combo")]
-        private int maxCombo
-        {
-            set { MaxCombo = value; }
-        }
-
-        [JsonProperty(@"user")]
-        private User user
-        {
-            set { User = value; }
-        }
-
-        [JsonProperty(@"replay_data")]
-        private Replay replay
-        {
-            set { Replay = value; }
-        }
-
-        [JsonProperty(@"mode_int")]
-        public int OnlineRulesetID { get; set; }
-
-        [JsonProperty(@"score_id")]
-        private long onlineScoreID
-        {
-            set { OnlineScoreID = value; }
-        }
-
-        [JsonProperty(@"created_at")]
-        private DateTimeOffset date
-        {
-            set { Date = value; }
-        }
-
-        [JsonProperty(@"beatmap")]
-        private BeatmapInfo beatmap
-        {
-            set { Beatmap = value; }
-        }
-
-        [JsonProperty(@"beatmapset")]
-        private BeatmapMetadata metadata
-        {
-            set { Beatmap.Metadata = value; }
-        }
-
-        [JsonProperty(@"statistics")]
-        private Dictionary<string, object> jsonStats
-        {
-            set
+            foreach (APILegacyScoreInfo score in r.Scores)
             {
-                foreach (var kvp in value)
-                {
-                    HitResult newKey;
-                    switch (kvp.Key)
-                    {
-                        case @"count_300":
-                            newKey = HitResult.Great;
-                            break;
-                        case @"count_100":
-                            newKey = HitResult.Good;
-                            break;
-                        case @"count_50":
-                            newKey = HitResult.Meh;
-                            break;
-                        case @"count_miss":
-                            newKey = HitResult.Miss;
-                            break;
-                        default:
-                            continue;
-                    }
+                score.Beatmap = beatmap;
+                score.OnlineRulesetID = ruleset.ID.Value;
+            }
 
-                    Statistics.Add(newKey, kvp.Value);
-                }
+            var userScore = r.UserScore;
+
+            if (userScore != null)
+            {
+                userScore.Score.Beatmap = beatmap;
+                userScore.Score.OnlineRulesetID = ruleset.ID.Value;
             }
         }
 
-        [JsonProperty(@"mods")]
-        private string[] modStrings { get; set; }
+        protected override string Target => $@"beatmaps/{beatmap.OnlineBeatmapID}/scores{createQueryParameters()}";
 
-        public void ApplyBeatmap(BeatmapInfo beatmap)
+        private string createQueryParameters()
         {
-            Beatmap = beatmap;
-            ApplyRuleset(beatmap.Ruleset);
-        }
+            StringBuilder query = new StringBuilder(@"?");
 
-        public void ApplyRuleset(RulesetInfo ruleset)
-        {
-            Ruleset = ruleset;
+            query.Append($@"type={scope.ToString().ToLowerInvariant()}");
+            query.Append($@"&mode={ruleset.ShortName}");
 
-            // Evaluate the mod string
-            Mods = Ruleset.CreateInstance().GetAllMods().Where(mod => modStrings.Contains(mod.ShortenedName)).ToArray();
+            foreach (var mod in mods)
+                query.Append($@"&mods[]={mod.Acronym}");
+
+            return query.ToString();
         }
     }
 }

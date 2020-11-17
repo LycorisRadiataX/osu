@@ -1,343 +1,326 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
+using JetBrains.Annotations;
 using osu.Framework.Allocation;
-using osu.Framework.Configuration;
-using osu.Framework.Extensions.Color4Extensions;
+using osu.Framework.Audio;
+using osu.Framework.Audio.Track;
+using osu.Framework.Bindables;
 using osu.Framework.Graphics;
+using osu.Framework.Graphics.Audio;
 using osu.Framework.Graphics.Containers;
-using osu.Framework.Graphics.Shapes;
-using osu.Framework.Graphics.Sprites;
-using osu.Framework.Graphics.Textures;
-using osu.Framework.Input;
-using osu.Framework.Localisation;
+using osu.Framework.Utils;
 using osu.Framework.Threading;
 using osu.Game.Beatmaps;
-using osu.Game.Graphics;
-using osu.Game.Graphics.Containers;
-using osu.Game.Graphics.Sprites;
-using osu.Game.Graphics.UserInterface;
-using osu.Game.Overlays.Music;
-using OpenTK;
-using OpenTK.Graphics;
+using osu.Game.Rulesets.Mods;
 
 namespace osu.Game.Overlays
 {
-    public class MusicController : OsuFocusedOverlayContainer
+    /// <summary>
+    /// Handles playback of the global music track.
+    /// </summary>
+    public class MusicController : CompositeDrawable
     {
-        private const float player_height = 130;
+        [Resolved]
+        private BeatmapManager beatmaps { get; set; }
 
-        private const float transition_length = 800;
-
-        private const float progress_height = 10;
-
-        private const float bottom_black_area_height = 55;
-
-        private Drawable background;
-        private ProgressBar progressBar;
-
-        private IconButton prevButton;
-        private IconButton playButton;
-        private IconButton nextButton;
-        private IconButton playlistButton;
-
-        private SpriteText title, artist;
-
-        private PlaylistOverlay playlist;
-
-        private LocalisationEngine localisation;
-
-        private BeatmapManager beatmaps;
-        private readonly Bindable<WorkingBeatmap> beatmapBacking = new Bindable<WorkingBeatmap>();
-        private List<BeatmapSetInfo> beatmapSets;
-        private BeatmapSetInfo currentSet;
-
-        private Container dragContainer;
-        private Container playerContainer;
-
-        public MusicController()
+        public IBindableList<BeatmapSetInfo> BeatmapSets
         {
-            Width = 400;
-            Margin = new MarginPadding(10);
+            get
+            {
+                if (LoadState < LoadState.Ready)
+                    throw new InvalidOperationException($"{nameof(BeatmapSets)} should not be accessed before the music controller is loaded.");
 
-            // required to let MusicController handle beatmap cycling.
-            AlwaysPresent = true;
+                return beatmapSets;
+            }
         }
 
-        private Vector2 dragStart;
+        /// <summary>
+        /// Point in time after which the current track will be restarted on triggering a "previous track" action.
+        /// </summary>
+        private const double restart_cutoff_point = 5000;
 
-        protected override bool OnDragStart(InputState state)
-        {
-            base.OnDragStart(state);
-            dragStart = state.Mouse.Position;
-            return true;
-        }
+        private readonly BindableList<BeatmapSetInfo> beatmapSets = new BindableList<BeatmapSetInfo>();
 
-        protected override bool OnDrag(InputState state)
-        {
-            if (base.OnDrag(state)) return true;
+        /// <summary>
+        /// Whether the user has requested the track to be paused. Use <see cref="IsPlaying"/> to determine whether the track is still playing.
+        /// </summary>
+        public bool UserPauseRequested { get; private set; }
 
-            Vector2 change = state.Mouse.Position - dragStart;
+        /// <summary>
+        /// Fired when the global <see cref="WorkingBeatmap"/> has changed.
+        /// Includes direction information for display purposes.
+        /// </summary>
+        public event Action<WorkingBeatmap, TrackChangeDirection> TrackChanged;
 
-            // Diminish the drag distance as we go further to simulate "rubber band" feeling.
-            change *= change.Length <= 0 ? 0 : (float)Math.Pow(change.Length, 0.7f) / change.Length;
+        [Resolved]
+        private IBindable<WorkingBeatmap> beatmap { get; set; }
 
-            dragContainer.MoveTo(change);
-            return true;
-        }
+        [Resolved]
+        private IBindable<IReadOnlyList<Mod>> mods { get; set; }
 
-        protected override bool OnDragEnd(InputState state)
-        {
-            dragContainer.MoveTo(Vector2.Zero, 800, Easing.OutElastic);
-            return base.OnDragEnd(state);
-        }
+        [NotNull]
+        public DrawableTrack CurrentTrack { get; private set; } = new DrawableTrack(new TrackVirtual(1000));
+
+        private IBindable<WeakReference<BeatmapSetInfo>> managerUpdated;
+        private IBindable<WeakReference<BeatmapSetInfo>> managerRemoved;
 
         [BackgroundDependencyLoader]
-        private void load(OsuGameBase game, BeatmapManager beatmaps, OsuColour colours, LocalisationEngine localisation)
+        private void load()
         {
-            this.beatmaps = beatmaps;
-            this.localisation = localisation;
+            managerUpdated = beatmaps.ItemUpdated.GetBoundCopy();
+            managerUpdated.BindValueChanged(beatmapUpdated);
+            managerRemoved = beatmaps.ItemRemoved.GetBoundCopy();
+            managerRemoved.BindValueChanged(beatmapRemoved);
 
-            Children = new Drawable[]
-            {
-                dragContainer = new Container
-                {
-                    Anchor = Anchor.Centre,
-                    Origin = Anchor.Centre,
-                    RelativeSizeAxes = Axes.X,
-                    AutoSizeAxes = Axes.Y,
-                    Children = new Drawable[]
-                    {
-                        playlist = new PlaylistOverlay
-                        {
-                            RelativeSizeAxes = Axes.X,
-                            Y = player_height + 10,
-                            OrderChanged = playlistOrderChanged
-                        },
-                        playerContainer = new Container
-                        {
-                            RelativeSizeAxes = Axes.X,
-                            Height = player_height,
-                            Masking = true,
-                            CornerRadius = 5,
-                            EdgeEffect = new EdgeEffectParameters
-                            {
-                                Type = EdgeEffectType.Shadow,
-                                Colour = Color4.Black.Opacity(40),
-                                Radius = 5,
-                            },
-                            Children = new[]
-                            {
-                                background = new Background(),
-                                title = new OsuSpriteText
-                                {
-                                    Origin = Anchor.BottomCentre,
-                                    Anchor = Anchor.TopCentre,
-                                    Position = new Vector2(0, 40),
-                                    TextSize = 25,
-                                    Colour = Color4.White,
-                                    Text = @"Nothing to play",
-                                    Font = @"Exo2.0-MediumItalic"
-                                },
-                                artist = new OsuSpriteText
-                                {
-                                    Origin = Anchor.TopCentre,
-                                    Anchor = Anchor.TopCentre,
-                                    Position = new Vector2(0, 45),
-                                    TextSize = 15,
-                                    Colour = Color4.White,
-                                    Text = @"Nothing to play",
-                                    Font = @"Exo2.0-BoldItalic"
-                                },
-                                new Container
-                                {
-                                    Padding = new MarginPadding { Bottom = progress_height },
-                                    Height = bottom_black_area_height,
-                                    RelativeSizeAxes = Axes.X,
-                                    Origin = Anchor.BottomCentre,
-                                    Anchor = Anchor.BottomCentre,
-                                    Children = new Drawable[]
-                                    {
-                                        new FillFlowContainer<IconButton>
-                                        {
-                                            AutoSizeAxes = Axes.Both,
-                                            Direction = FillDirection.Horizontal,
-                                            Spacing = new Vector2(5),
-                                            Origin = Anchor.Centre,
-                                            Anchor = Anchor.Centre,
-                                            Children = new[]
-                                            {
-                                                prevButton = new IconButton
-                                                {
-                                                    Anchor = Anchor.Centre,
-                                                    Origin = Anchor.Centre,
-                                                    Action = prev,
-                                                    Icon = FontAwesome.fa_step_backward,
-                                                },
-                                                playButton = new IconButton
-                                                {
-                                                    Anchor = Anchor.Centre,
-                                                    Origin = Anchor.Centre,
-                                                    Scale = new Vector2(1.4f),
-                                                    IconScale = new Vector2(1.4f),
-                                                    Action = play,
-                                                    Icon = FontAwesome.fa_play_circle_o,
-                                                },
-                                                nextButton = new IconButton
-                                                {
-                                                    Anchor = Anchor.Centre,
-                                                    Origin = Anchor.Centre,
-                                                    Action = () => next(),
-                                                    Icon = FontAwesome.fa_step_forward,
-                                                },
-                                            }
-                                        },
-                                        playlistButton = new IconButton
-                                        {
-                                            Origin = Anchor.Centre,
-                                            Anchor = Anchor.CentreRight,
-                                            Position = new Vector2(-bottom_black_area_height / 2, 0),
-                                            Icon = FontAwesome.fa_bars,
-                                            Action = () => playlist.ToggleVisibility(),
-                                        },
-                                    }
-                                },
-                                progressBar = new ProgressBar
-                                {
-                                    Origin = Anchor.BottomCentre,
-                                    Anchor = Anchor.BottomCentre,
-                                    Height = progress_height,
-                                    FillColour = colours.Yellow,
-                                    OnSeek = progress => current?.Track.Seek(progress)
-                                }
-                            },
-                        },
-                    }
-                }
-            };
+            beatmapSets.AddRange(beatmaps.GetAllUsableBeatmapSets(IncludedDetails.Minimal, true).OrderBy(_ => RNG.Next()));
 
-            beatmapSets = beatmaps.GetAllUsableBeatmapSets();
-            beatmaps.ItemAdded += handleBeatmapAdded;
-            beatmaps.ItemRemoved += handleBeatmapRemoved;
-
-            beatmapBacking.BindTo(game.Beatmap);
-
-            playlist.StateChanged += s => playlistButton.FadeColour(s == Visibility.Visible ? colours.Yellow : Color4.White, 200, Easing.OutQuint);
+            // Todo: These binds really shouldn't be here, but are unlikely to cause any issues for now.
+            // They are placed here for now since some tests rely on setting the beatmap _and_ their hierarchies inside their load(), which runs before the MusicController's load().
+            beatmap.BindValueChanged(beatmapChanged, true);
+            mods.BindValueChanged(_ => ResetTrackAdjustments(), true);
         }
 
-        private void playlistOrderChanged(BeatmapSetInfo beatmapSetInfo, int index)
+        /// <summary>
+        /// Forcefully reload the current <see cref="WorkingBeatmap"/>'s track from disk.
+        /// </summary>
+        public void ReloadCurrentTrack() => changeTrack();
+
+        /// <summary>
+        /// Change the position of a <see cref="BeatmapSetInfo"/> in the current playlist.
+        /// </summary>
+        /// <param name="beatmapSetInfo">The beatmap to move.</param>
+        /// <param name="index">The new position.</param>
+        public void ChangeBeatmapSetPosition(BeatmapSetInfo beatmapSetInfo, int index)
         {
             beatmapSets.Remove(beatmapSetInfo);
             beatmapSets.Insert(index, beatmapSetInfo);
         }
 
-        private void handleBeatmapAdded(BeatmapSetInfo obj) => beatmapSets.Add(obj);
-        private void handleBeatmapRemoved(BeatmapSetInfo obj) => beatmapSets.RemoveAll(s => s.ID == obj.ID);
+        /// <summary>
+        /// Returns whether the beatmap track is playing.
+        /// </summary>
+        public bool IsPlaying => CurrentTrack.IsRunning;
 
-        protected override void LoadComplete()
+        /// <summary>
+        /// Returns whether the beatmap track is loaded.
+        /// </summary>
+        public bool TrackLoaded => CurrentTrack.TrackLoaded;
+
+        private void beatmapUpdated(ValueChangedEvent<WeakReference<BeatmapSetInfo>> weakSet)
         {
-            beatmapBacking.ValueChanged += beatmapChanged;
-            beatmapBacking.DisabledChanged += beatmapDisabledChanged;
-            beatmapBacking.TriggerChange();
-
-            base.LoadComplete();
-        }
-
-        private void beatmapDisabledChanged(bool disabled)
-        {
-            if (disabled)
-                playlist.Hide();
-
-            prevButton.Enabled.Value = !disabled;
-            nextButton.Enabled.Value = !disabled;
-            playlistButton.Enabled.Value = !disabled;
-        }
-
-        protected override void UpdateAfterChildren()
-        {
-            base.UpdateAfterChildren();
-            Height = dragContainer.Height;
-        }
-
-        protected override void Update()
-        {
-            base.Update();
-
-            if (current?.TrackLoaded ?? false)
+            if (weakSet.NewValue.TryGetTarget(out var set))
             {
-                var track = current.Track;
-
-                progressBar.EndTime = track.Length;
-                progressBar.CurrentTime = track.CurrentTime;
-
-                playButton.Icon = track.IsRunning ? FontAwesome.fa_pause_circle_o : FontAwesome.fa_play_circle_o;
-
-                if (track.HasCompleted && !track.Looping && !beatmapBacking.Disabled && beatmapSets.Any())
-                    next();
+                Schedule(() =>
+                {
+                    beatmapSets.Remove(set);
+                    beatmapSets.Add(set);
+                });
             }
-            else
-                playButton.Icon = FontAwesome.fa_play_circle_o;
         }
 
-        private void play()
+        private void beatmapRemoved(ValueChangedEvent<WeakReference<BeatmapSetInfo>> weakSet)
         {
-            var track = current?.Track;
-
-            if (track == null)
+            if (weakSet.NewValue.TryGetTarget(out var set))
             {
-                if (!beatmapBacking.Disabled)
-                    next(true);
-                return;
+                Schedule(() =>
+                {
+                    beatmapSets.RemoveAll(s => s.ID == set.ID);
+                });
             }
-
-            if (track.IsRunning)
-                track.Stop();
-            else
-                track.Start();
         }
 
-        private void prev()
-        {
-            queuedDirection = TransformDirection.Prev;
+        private ScheduledDelegate seekDelegate;
 
-            var playable = beatmapSets.TakeWhile(i => i.ID != current.BeatmapSetInfo.ID).LastOrDefault() ?? beatmapSets.LastOrDefault();
+        public void SeekTo(double position)
+        {
+            seekDelegate?.Cancel();
+            seekDelegate = Schedule(() =>
+            {
+                if (!beatmap.Disabled)
+                    CurrentTrack.Seek(position);
+            });
+        }
+
+        /// <summary>
+        /// Ensures music is playing, no matter what, unless the user has explicitly paused.
+        /// This means that if the current beatmap has a virtual track (see <see cref="TrackVirtual"/>) a new beatmap will be selected.
+        /// </summary>
+        public void EnsurePlayingSomething()
+        {
+            if (UserPauseRequested) return;
+
+            if (CurrentTrack.IsDummyDevice || beatmap.Value.BeatmapSetInfo.DeletePending)
+            {
+                if (beatmap.Disabled)
+                    return;
+
+                NextTrack();
+            }
+            else if (!IsPlaying)
+            {
+                Play();
+            }
+        }
+
+        /// <summary>
+        /// Start playing the current track (if not already playing).
+        /// </summary>
+        /// <param name="restart">Whether to restart the track from the beginning.</param>
+        /// <param name="requestedByUser">
+        /// Whether the request to play was issued by the user rather than internally.
+        /// Specifying <c>true</c> will ensure that other methods like <see cref="EnsurePlayingSomething"/>
+        /// will resume music playback going forward.
+        /// </param>
+        /// <returns>Whether the operation was successful.</returns>
+        public bool Play(bool restart = false, bool requestedByUser = false)
+        {
+            if (requestedByUser)
+                UserPauseRequested = false;
+
+            if (restart)
+                CurrentTrack.Restart();
+            else if (!IsPlaying)
+                CurrentTrack.Start();
+
+            return true;
+        }
+
+        /// <summary>
+        /// Stop playing the current track and pause at the current position.
+        /// </summary>
+        /// <param name="requestedByUser">
+        /// Whether the request to stop was issued by the user rather than internally.
+        /// Specifying <c>true</c> will ensure that other methods like <see cref="EnsurePlayingSomething"/>
+        /// will not resume music playback until the next explicit call to <see cref="Play"/>.
+        /// </param>
+        public void Stop(bool requestedByUser = false)
+        {
+            UserPauseRequested |= requestedByUser;
+            if (CurrentTrack.IsRunning)
+                CurrentTrack.Stop();
+        }
+
+        /// <summary>
+        /// Toggle pause / play.
+        /// </summary>
+        /// <returns>Whether the operation was successful.</returns>
+        public bool TogglePause()
+        {
+            if (CurrentTrack.IsRunning)
+                Stop(true);
+            else
+                Play(requestedByUser: true);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Play the previous track or restart the current track if it's current time below <see cref="restart_cutoff_point"/>.
+        /// </summary>
+        /// <param name="onSuccess">Invoked when the operation has been performed successfully.</param>
+        public void PreviousTrack(Action<PreviousTrackResult> onSuccess = null) => Schedule(() =>
+        {
+            PreviousTrackResult res = prev();
+            if (res != PreviousTrackResult.None)
+                onSuccess?.Invoke(res);
+        });
+
+        /// <summary>
+        /// Play the previous track or restart the current track if it's current time below <see cref="restart_cutoff_point"/>.
+        /// </summary>
+        /// <returns>The <see cref="PreviousTrackResult"/> that indicate the decided action.</returns>
+        private PreviousTrackResult prev()
+        {
+            if (beatmap.Disabled)
+                return PreviousTrackResult.None;
+
+            var currentTrackPosition = CurrentTrack.CurrentTime;
+
+            if (currentTrackPosition >= restart_cutoff_point)
+            {
+                SeekTo(0);
+                return PreviousTrackResult.Restart;
+            }
+
+            queuedDirection = TrackChangeDirection.Prev;
+
+            var playable = BeatmapSets.TakeWhile(i => i.ID != current.BeatmapSetInfo.ID).LastOrDefault() ?? BeatmapSets.LastOrDefault();
+
             if (playable != null)
             {
-                beatmapBacking.Value = beatmaps.GetWorkingBeatmap(playable.Beatmaps.First(), beatmapBacking);
-                beatmapBacking.Value.Track.Restart();
+                changeBeatmap(beatmaps.GetWorkingBeatmap(playable.Beatmaps.First(), beatmap.Value));
+                restartTrack();
+                return PreviousTrackResult.Previous;
             }
+
+            return PreviousTrackResult.None;
         }
 
-        private void next(bool instant = false)
+        /// <summary>
+        /// Play the next random or playlist track.
+        /// </summary>
+        /// <param name="onSuccess">Invoked when the operation has been performed successfully.</param>
+        /// <returns>A <see cref="ScheduledDelegate"/> of the operation.</returns>
+        public void NextTrack(Action onSuccess = null) => Schedule(() =>
         {
-            if (!instant)
-                queuedDirection = TransformDirection.Next;
+            bool res = next();
+            if (res)
+                onSuccess?.Invoke();
+        });
 
-            var playable = beatmapSets.SkipWhile(i => i.ID != current.BeatmapSetInfo.ID).Skip(1).FirstOrDefault() ?? beatmapSets.FirstOrDefault();
+        private bool next()
+        {
+            if (beatmap.Disabled)
+                return false;
+
+            queuedDirection = TrackChangeDirection.Next;
+
+            var playable = BeatmapSets.SkipWhile(i => i.ID != current.BeatmapSetInfo.ID).ElementAtOrDefault(1) ?? BeatmapSets.FirstOrDefault();
+
             if (playable != null)
             {
-                beatmapBacking.Value = beatmaps.GetWorkingBeatmap(playable.Beatmaps.First(), beatmapBacking);
-                beatmapBacking.Value.Track.Restart();
+                changeBeatmap(beatmaps.GetWorkingBeatmap(playable.Beatmaps.First(), beatmap.Value));
+                restartTrack();
+                return true;
             }
+
+            return false;
+        }
+
+        private void restartTrack()
+        {
+            // if not scheduled, the previously track will be stopped one frame later (see ScheduleAfterChildren logic in GameBase).
+            // we probably want to move this to a central method for switching to a new working beatmap in the future.
+            Schedule(() => CurrentTrack.Restart());
         }
 
         private WorkingBeatmap current;
-        private TransformDirection? queuedDirection;
 
-        private void beatmapChanged(WorkingBeatmap beatmap)
+        private TrackChangeDirection? queuedDirection;
+
+        private void beatmapChanged(ValueChangedEvent<WorkingBeatmap> beatmap) => changeBeatmap(beatmap.NewValue);
+
+        private void changeBeatmap(WorkingBeatmap newWorking)
         {
-            TransformDirection direction = TransformDirection.None;
+            // This method can potentially be triggered multiple times as it is eagerly fired in next() / prev() to ensure correct execution order
+            // (changeBeatmap must be called before consumers receive the bindable changed event, which is not the case when the local beatmap bindable is updated directly).
+            if (newWorking == current)
+                return;
+
+            var lastWorking = current;
+
+            TrackChangeDirection direction = TrackChangeDirection.None;
+
+            bool audioEquals = newWorking?.BeatmapInfo?.AudioEquals(current?.BeatmapInfo) ?? false;
 
             if (current != null)
             {
-                bool audioEquals = beatmap?.BeatmapInfo?.AudioEquals(current.BeatmapInfo) ?? false;
-
                 if (audioEquals)
-                    direction = TransformDirection.None;
+                    direction = TrackChangeDirection.None;
                 else if (queuedDirection.HasValue)
                 {
                     direction = queuedDirection.Value;
@@ -345,135 +328,125 @@ namespace osu.Game.Overlays
                 }
                 else
                 {
-                    //figure out the best direction based on order in playlist.
-                    var last = beatmapSets.TakeWhile(b => b.ID != current.BeatmapSetInfo?.ID).Count();
-                    var next = beatmap == null ? -1 : beatmapSets.TakeWhile(b => b.ID != beatmap.BeatmapSetInfo?.ID).Count();
+                    // figure out the best direction based on order in playlist.
+                    var last = BeatmapSets.TakeWhile(b => b.ID != current.BeatmapSetInfo?.ID).Count();
+                    var next = newWorking == null ? -1 : BeatmapSets.TakeWhile(b => b.ID != newWorking.BeatmapSetInfo?.ID).Count();
 
-                    direction = last > next ? TransformDirection.Prev : TransformDirection.Next;
+                    direction = last > next ? TrackChangeDirection.Prev : TrackChangeDirection.Next;
                 }
             }
 
-            current = beatmap;
+            current = newWorking;
 
-            progressBar.CurrentTime = 0;
+            if (!audioEquals || CurrentTrack.IsDummyDevice)
+            {
+                changeTrack();
+            }
+            else
+            {
+                // transfer still valid track to new working beatmap
+                current.TransferTrack(lastWorking.Track);
+            }
 
-            updateDisplay(current, direction);
+            TrackChanged?.Invoke(current, direction);
+
+            ResetTrackAdjustments();
 
             queuedDirection = null;
+
+            // this will be a noop if coming from the beatmapChanged event.
+            // the exception is local operations like next/prev, where we want to complete loading the track before sending out a change.
+            if (beatmap.Value != current && beatmap is Bindable<WorkingBeatmap> working)
+                working.Value = current;
         }
 
-        private ScheduledDelegate pendingBeatmapSwitch;
-
-        private void updateDisplay(WorkingBeatmap beatmap, TransformDirection direction)
+        private void changeTrack()
         {
-            //we might be off-screen when this update comes in.
-            //rather than Scheduling, manually handle this to avoid possible memory contention.
-            pendingBeatmapSwitch?.Cancel();
+            var lastTrack = CurrentTrack;
 
-            pendingBeatmapSwitch = Schedule(delegate
+            var queuedTrack = new DrawableTrack(current.LoadTrack());
+            queuedTrack.Completed += () => onTrackCompleted(current);
+
+            CurrentTrack = queuedTrack;
+
+            // At this point we may potentially be in an async context from tests. This is extremely dangerous but we have to make do for now.
+            // CurrentTrack is immediately updated above for situations where a immediate knowledge about the new track is required,
+            // but the mutation of the hierarchy is scheduled to avoid exceptions.
+            Schedule(() =>
             {
-                // todo: this can likely be replaced with WorkingBeatmap.GetBeatmapAsync()
-                Task.Run(() =>
+                lastTrack.VolumeTo(0, 500, Easing.Out).Expire();
+
+                if (queuedTrack == CurrentTrack)
                 {
-                    if (beatmap?.Beatmap == null) //this is not needed if a placeholder exists
-                    {
-                        title.Current = null;
-                        title.Text = @"Nothing to play";
-
-                        artist.Current = null;
-                        artist.Text = @"Nothing to play";
-                    }
-                    else
-                    {
-                        BeatmapMetadata metadata = beatmap.Metadata;
-                        title.Current = localisation.GetUnicodePreference(metadata.TitleUnicode, metadata.Title);
-                        artist.Current = localisation.GetUnicodePreference(metadata.ArtistUnicode, metadata.Artist);
-                    }
-                });
-
-                LoadComponentAsync(new Background(beatmap) { Depth = float.MaxValue }, newBackground =>
+                    AddInternal(queuedTrack);
+                    queuedTrack.VolumeTo(0).Then().VolumeTo(1, 300, Easing.Out);
+                }
+                else
                 {
-                    switch (direction)
-                    {
-                        case TransformDirection.Next:
-                            newBackground.Position = new Vector2(400, 0);
-                            newBackground.MoveToX(0, 500, Easing.OutCubic);
-                            background.MoveToX(-400, 500, Easing.OutCubic);
-                            break;
-                        case TransformDirection.Prev:
-                            newBackground.Position = new Vector2(-400, 0);
-                            newBackground.MoveToX(0, 500, Easing.OutCubic);
-                            background.MoveToX(400, 500, Easing.OutCubic);
-                            break;
-                    }
-
-                    background.Expire();
-                    background = newBackground;
-
-                    playerContainer.Add(newBackground);
-                });
+                    // If the track has changed since the call to changeTrack, it is safe to dispose the
+                    // queued track rather than consume it.
+                    queuedTrack.Dispose();
+                }
             });
         }
 
-        protected override void PopIn()
+        private void onTrackCompleted(WorkingBeatmap workingBeatmap)
         {
-            base.PopIn();
+            // the source of track completion is the audio thread, so the beatmap may have changed before firing.
+            if (current != workingBeatmap)
+                return;
 
-            this.FadeIn(transition_length, Easing.OutQuint);
-            dragContainer.ScaleTo(1, transition_length, Easing.OutElastic);
+            if (!CurrentTrack.Looping && !beatmap.Disabled)
+                NextTrack();
         }
 
-        protected override void PopOut()
+        private bool allowRateAdjustments;
+
+        /// <summary>
+        /// Whether mod rate adjustments are allowed to be applied.
+        /// </summary>
+        public bool AllowRateAdjustments
         {
-            base.PopOut();
-
-            this.FadeOut(transition_length, Easing.OutQuint);
-            dragContainer.ScaleTo(0.9f, transition_length, Easing.OutQuint);
-        }
-
-        private enum TransformDirection
-        {
-            None,
-            Next,
-            Prev
-        }
-
-        private class Background : BufferedContainer
-        {
-            private readonly Sprite sprite;
-            private readonly WorkingBeatmap beatmap;
-
-            public Background(WorkingBeatmap beatmap = null)
+            get => allowRateAdjustments;
+            set
             {
-                this.beatmap = beatmap;
-                CacheDrawnFrameBuffer = true;
-                Depth = float.MaxValue;
-                RelativeSizeAxes = Axes.Both;
+                if (allowRateAdjustments == value)
+                    return;
 
-                Children = new Drawable[]
-                {
-                    sprite = new Sprite
-                    {
-                        RelativeSizeAxes = Axes.Both,
-                        Colour = OsuColour.Gray(150),
-                        FillMode = FillMode.Fill,
-                    },
-                    new Box
-                    {
-                        RelativeSizeAxes = Axes.X,
-                        Height = bottom_black_area_height,
-                        Origin = Anchor.BottomCentre,
-                        Anchor = Anchor.BottomCentre,
-                        Colour = Color4.Black.Opacity(0.5f)
-                    }
-                };
-            }
-
-            [BackgroundDependencyLoader]
-            private void load(TextureStore textures)
-            {
-                sprite.Texture = beatmap?.Background ?? textures.Get(@"Backgrounds/bg4");
+                allowRateAdjustments = value;
+                ResetTrackAdjustments();
             }
         }
+
+        /// <summary>
+        /// Resets the speed adjustments currently applied on <see cref="CurrentTrack"/> and applies the mod adjustments if <see cref="AllowRateAdjustments"/> is <c>true</c>.
+        /// </summary>
+        /// <remarks>
+        /// Does not reset speed adjustments applied directly to the beatmap track.
+        /// </remarks>
+        public void ResetTrackAdjustments()
+        {
+            CurrentTrack.ResetSpeedAdjustments();
+
+            if (allowRateAdjustments)
+            {
+                foreach (var mod in mods.Value.OfType<IApplicableToTrack>())
+                    mod.ApplyToTrack(CurrentTrack);
+            }
+        }
+    }
+
+    public enum TrackChangeDirection
+    {
+        None,
+        Next,
+        Prev
+    }
+
+    public enum PreviousTrackResult
+    {
+        None,
+        Restart,
+        Previous
     }
 }

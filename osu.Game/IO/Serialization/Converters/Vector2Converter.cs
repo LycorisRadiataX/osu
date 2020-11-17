@@ -1,36 +1,32 @@
-// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using OpenTK;
+using osuTK;
 
 namespace osu.Game.IO.Serialization.Converters
 {
     /// <summary>
     /// A type of <see cref="JsonConverter"/> that serializes only the X and Y coordinates of a <see cref="Vector2"/>.
     /// </summary>
-    public class Vector2Converter : JsonConverter
+    public class Vector2Converter : JsonConverter<Vector2>
     {
-        public override bool CanConvert(Type objectType) => objectType == typeof(Vector2);
-
-        public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+        public override Vector2 ReadJson(JsonReader reader, Type objectType, Vector2 existingValue, bool hasExistingValue, JsonSerializer serializer)
         {
             var obj = JObject.Load(reader);
             return new Vector2((float)obj["x"], (float)obj["y"]);
         }
 
-        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+        public override void WriteJson(JsonWriter writer, Vector2 value, JsonSerializer serializer)
         {
-            var vector = (Vector2)value;
-
             writer.WriteStartObject();
 
             writer.WritePropertyName("x");
-            writer.WriteValue(vector.X);
+            writer.WriteValue(value.X);
             writer.WritePropertyName("y");
-            writer.WriteValue(vector.Y);
+            writer.WriteValue(value.Y);
 
             writer.WriteEndObject();
         }

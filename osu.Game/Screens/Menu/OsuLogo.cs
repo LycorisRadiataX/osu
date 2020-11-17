@@ -1,24 +1,26 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using osu.Framework.Allocation;
 using osu.Framework.Audio;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Audio.Track;
+using osu.Framework.Extensions.Color4Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
 using osu.Framework.Graphics.Textures;
-using osu.Framework.Input;
-using osu.Framework.MathUtils;
+using osu.Framework.Input.Events;
+using osu.Framework.Utils;
 using osu.Game.Beatmaps.ControlPoints;
-using osu.Game.Graphics;
 using osu.Game.Graphics.Backgrounds;
 using osu.Game.Graphics.Containers;
-using OpenTK;
-using OpenTK.Graphics;
+using osu.Game.Overlays;
+using osuTK;
+using osuTK.Graphics;
+using osuTK.Input;
 
 namespace osu.Game.Screens.Menu
 {
@@ -27,7 +29,7 @@ namespace osu.Game.Screens.Menu
     /// </summary>
     public class OsuLogo : BeatSyncedContainer
     {
-        public readonly Color4 OsuPink = OsuColour.FromHex(@"e967a1");
+        public readonly Color4 OsuPink = Color4Extensions.FromHex(@"e967a1");
 
         private const double transition_length = 300;
 
@@ -37,7 +39,7 @@ namespace osu.Game.Screens.Menu
         private readonly Container logoBeatContainer;
         private readonly Container logoAmplitudeContainer;
         private readonly Container logoHoverContainer;
-        private readonly LogoVisualisation visualizer;
+        private readonly MenuLogoVisualisation visualizer;
 
         private readonly IntroSequence intro;
 
@@ -45,7 +47,6 @@ namespace osu.Game.Screens.Menu
         private SampleChannel sampleBeat;
 
         private readonly Container colourAndTriangles;
-
         private readonly Triangles triangles;
 
         /// <summary>
@@ -53,7 +54,13 @@ namespace osu.Game.Screens.Menu
         /// </summary>
         public Func<bool> Action;
 
-        public float SizeForFlow => logo == null ? 0 : logo.DrawSize.X * logo.Scale.X * logoBounceContainer.Scale.X * logoHoverContainer.Scale.X * 0.74f;
+        /// <summary>
+        /// The size of the logo Sprite with respect to the scale of its hover and bounce containers.
+        /// </summary>
+        /// <remarks>Does not account for the scale of this <see cref="OsuLogo"/></remarks>
+        public float SizeForFlow => logo == null ? 0 : logo.DrawSize.X * logo.Scale.X * logoBounceContainer.Scale.X * logoHoverContainer.Scale.X;
+
+        public bool IsTracking { get; set; }
 
         private readonly Sprite ripple;
 
@@ -61,33 +68,30 @@ namespace osu.Game.Screens.Menu
 
         public bool Triangles
         {
-            set { colourAndTriangles.FadeTo(value ? 1 : 0, transition_length, Easing.OutQuint); }
+            set => colourAndTriangles.FadeTo(value ? 1 : 0, transition_length, Easing.OutQuint);
         }
 
-        public override bool ReceiveMouseInputAt(Vector2 screenSpacePos) => logoContainer.ReceiveMouseInputAt(screenSpacePos);
+        public bool BeatMatching = true;
+
+        public override bool ReceivePositionalInputAt(Vector2 screenSpacePos) => logoContainer.ReceivePositionalInputAt(screenSpacePos);
 
         public bool Ripple
         {
-            get { return rippleContainer.Alpha > 0; }
-            set { rippleContainer.FadeTo(value ? 1 : 0, transition_length, Easing.OutQuint); }
+            get => rippleContainer.Alpha > 0;
+            set => rippleContainer.FadeTo(value ? 1 : 0, transition_length, Easing.OutQuint);
         }
 
         private readonly Box flashLayer;
 
         private readonly Container impactContainer;
 
-        private const float default_size = 480;
-
         private const double early_activation = 60;
+
+        public override bool IsPresent => base.IsPresent || Scheduler.HasPendingTasks;
 
         public OsuLogo()
         {
-            // Required to make Schedule calls run in OsuScreen even when we are not visible.
-            AlwaysPresent = true;
-
             EarlyActivationMilliseconds = early_activation;
-
-            Size = new Vector2(default_size);
 
             Origin = Anchor.Centre;
 
@@ -120,7 +124,7 @@ namespace osu.Game.Screens.Menu
                                         {
                                             Anchor = Anchor.Centre,
                                             Origin = Anchor.Centre,
-                                            Blending = BlendingMode.Additive,
+                                            Blending = BlendingParameters.Additive,
                                             Alpha = 0
                                         }
                                     }
@@ -135,7 +139,7 @@ namespace osu.Game.Screens.Menu
                                             AutoSizeAxes = Axes.Both,
                                             Children = new Drawable[]
                                             {
-                                                visualizer = new LogoVisualisation
+                                                visualizer = new MenuLogoVisualisation
                                                 {
                                                     RelativeSizeAxes = Axes.Both,
                                                     Origin = Anchor.Centre,
@@ -172,8 +176,8 @@ namespace osu.Game.Screens.Menu
                                                                         triangles = new Triangles
                                                                         {
                                                                             TriangleScale = 4,
-                                                                            ColourLight = OsuColour.FromHex(@"ff7db7"),
-                                                                            ColourDark = OsuColour.FromHex(@"de5b95"),
+                                                                            ColourLight = Color4Extensions.FromHex(@"ff7db7"),
+                                                                            ColourDark = Color4Extensions.FromHex(@"de5b95"),
                                                                             RelativeSizeAxes = Axes.Both,
                                                                         },
                                                                     }
@@ -181,7 +185,7 @@ namespace osu.Game.Screens.Menu
                                                                 flashLayer = new Box
                                                                 {
                                                                     RelativeSizeAxes = Axes.Both,
-                                                                    Blending = BlendingMode.Additive,
+                                                                    Blending = BlendingParameters.Additive,
                                                                     Colour = Color4.White,
                                                                     Alpha = 0,
                                                                 },
@@ -225,7 +229,7 @@ namespace osu.Game.Screens.Menu
         }
 
         /// <summary>
-        /// Schedule a new extenral animation. Handled queueing and finishing previous animations in a sane way.
+        /// Schedule a new external animation. Handled queueing and finishing previous animations in a sane way.
         /// </summary>
         /// <param name="action">The animation to be performed</param>
         /// <param name="waitForPrevious">If true, the new animation is delayed until all previous transforms finish. If false, existing transformed are cleared.</param>
@@ -251,8 +255,8 @@ namespace osu.Game.Screens.Menu
         [BackgroundDependencyLoader]
         private void load(TextureStore textures, AudioManager audio)
         {
-            sampleClick = audio.Sample.Get(@"Menu/osu-logo-select");
-            sampleBeat = audio.Sample.Get(@"Menu/osu-logo-heartbeat");
+            sampleClick = audio.Samples.Get(@"Menu/osu-logo-select");
+            sampleBeat = audio.Samples.Get(@"Menu/osu-logo-heartbeat");
 
             logo.Texture = textures.Get(@"Menu/logo");
             ripple.Texture = textures.Get(@"Menu/logo");
@@ -260,9 +264,11 @@ namespace osu.Game.Screens.Menu
 
         private int lastBeatIndex;
 
-        protected override void OnNewBeat(int beatIndex, TimingControlPoint timingPoint, EffectControlPoint effectPoint, TrackAmplitudes amplitudes)
+        protected override void OnNewBeat(int beatIndex, TimingControlPoint timingPoint, EffectControlPoint effectPoint, ChannelAmplitudes amplitudes)
         {
             base.OnNewBeat(beatIndex, timingPoint, effectPoint, amplitudes);
+
+            if (!BeatMatching) return;
 
             lastBeatIndex = beatIndex;
 
@@ -313,6 +319,9 @@ namespace osu.Game.Screens.Menu
             intro.Delay(length + fade).FadeOut();
         }
 
+        [Resolved]
+        private MusicController musicController { get; set; }
+
         protected override void Update()
         {
             base.Update();
@@ -321,10 +330,10 @@ namespace osu.Game.Screens.Menu
             const float velocity_adjust_cutoff = 0.98f;
             const float paused_velocity = 0.5f;
 
-            if (Beatmap.Value.Track.IsRunning)
+            if (musicController.CurrentTrack.IsRunning)
             {
-                var maxAmplitude = lastBeatIndex >= 0 ? Beatmap.Value.Track.CurrentAmplitudes.Maximum : 0;
-                logoAmplitudeContainer.ScaleTo(1 - Math.Max(0, maxAmplitude - scale_adjust_cutoff) * 0.04f, 75, Easing.OutQuint);
+                var maxAmplitude = lastBeatIndex >= 0 ? musicController.CurrentTrack.CurrentAmplitudes.Maximum : 0;
+                logoAmplitudeContainer.Scale = new Vector2((float)Interpolation.Damp(logoAmplitudeContainer.Scale.X, 1 - Math.Max(0, maxAmplitude - scale_adjust_cutoff) * 0.04f, 0.9f, Time.Elapsed));
 
                 if (maxAmplitude > velocity_adjust_cutoff)
                     triangles.Velocity = 1 + Math.Max(0, maxAmplitude - velocity_adjust_cutoff) * 50;
@@ -337,21 +346,24 @@ namespace osu.Game.Screens.Menu
             }
         }
 
-        public override bool HandleMouseInput => base.HandleMouseInput && Action != null && Alpha > 0.2f;
+        public override bool HandlePositionalInput => base.HandlePositionalInput && Action != null && Alpha > 0.2f;
 
-        protected override bool OnMouseDown(InputState state, MouseDownEventArgs args)
+        protected override bool OnMouseDown(MouseDownEvent e)
         {
+            if (e.Button != MouseButton.Left) return false;
+
             logoBounceContainer.ScaleTo(0.9f, 1000, Easing.Out);
             return true;
         }
 
-        protected override bool OnMouseUp(InputState state, MouseUpEventArgs args)
+        protected override void OnMouseUp(MouseUpEvent e)
         {
+            if (e.Button != MouseButton.Left) return;
+
             logoBounceContainer.ScaleTo(1f, 500, Easing.OutElastic);
-            return true;
         }
 
-        protected override bool OnClick(InputState state)
+        protected override bool OnClick(ClickEvent e)
         {
             if (Action?.Invoke() ?? true)
                 sampleClick.Play();
@@ -362,13 +374,13 @@ namespace osu.Game.Screens.Menu
             return true;
         }
 
-        protected override bool OnHover(InputState state)
+        protected override bool OnHover(HoverEvent e)
         {
             logoHoverContainer.ScaleTo(1.1f, 500, Easing.OutElastic);
             return true;
         }
 
-        protected override void OnHoverLost(InputState state)
+        protected override void OnHoverLost(HoverLostEvent e)
         {
             logoHoverContainer.ScaleTo(1, 500, Easing.OutElastic);
         }

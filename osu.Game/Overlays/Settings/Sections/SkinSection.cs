@@ -1,82 +1,184 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using osu.Framework.Allocation;
+using osu.Framework.Bindables;
 using osu.Framework.Graphics;
+using osu.Framework.Graphics.Sprites;
+using osu.Framework.Logging;
 using osu.Game.Configuration;
-using osu.Game.Graphics;
 using osu.Game.Graphics.UserInterface;
 using osu.Game.Skinning;
-using OpenTK;
+using osuTK;
 
 namespace osu.Game.Overlays.Settings.Sections
 {
     public class SkinSection : SettingsSection
     {
-        private SettingsDropdown<int> skinDropdown;
+        private SkinSettingsDropdown skinDropdown;
 
         public override string Header => "Skin";
 
-        public override FontAwesome Icon => FontAwesome.fa_paint_brush;
+        public override Drawable CreateIcon() => new SpriteIcon
+        {
+            Icon = FontAwesome.Solid.PaintBrush
+        };
 
-        private SkinManager skins;
+        private readonly Bindable<SkinInfo> dropdownBindable = new Bindable<SkinInfo> { Default = SkinInfo.Default };
+        private readonly Bindable<int> configBindable = new Bindable<int>();
+
+        private static readonly SkinInfo random_skin_info = new SkinInfo
+        {
+            ID = SkinInfo.RANDOM_SKIN,
+            Name = "<Random Skin>",
+        };
+
+        private List<SkinInfo> skinItems;
+
+        [Resolved]
+        private SkinManager skins { get; set; }
+
+        private IBindable<WeakReference<SkinInfo>> managerUpdated;
+        private IBindable<WeakReference<SkinInfo>> managerRemoved;
 
         [BackgroundDependencyLoader]
-        private void load(OsuConfigManager config, SkinManager skins)
+        private void load(OsuConfigManager config)
         {
-            this.skins = skins;
-
             FlowContent.Spacing = new Vector2(0, 5);
+
             Children = new Drawable[]
             {
-                skinDropdown = new SettingsDropdown<int>(),
-                new SettingsSlider<double, SizeSlider>
+                skinDropdown = new SkinSettingsDropdown(),
+                new ExportSkinButton(),
+                new SettingsSlider<float, SizeSlider>
                 {
                     LabelText = "Menu cursor size",
-                    Bindable = config.GetBindable<double>(OsuSetting.MenuCursorSize),
-                    KeyboardStep = 0.1f
+                    Current = config.GetBindable<float>(OsuSetting.MenuCursorSize),
+                    KeyboardStep = 0.01f
                 },
-                new SettingsSlider<double, SizeSlider>
+                new SettingsSlider<float, SizeSlider>
                 {
                     LabelText = "Gameplay cursor size",
-                    Bindable = config.GetBindable<double>(OsuSetting.GameplayCursorSize),
-                    KeyboardStep = 0.1f
+                    Current = config.GetBindable<float>(OsuSetting.GameplayCursorSize),
+                    KeyboardStep = 0.01f
                 },
                 new SettingsCheckbox
                 {
                     LabelText = "Adjust gameplay cursor size based on current beatmap",
-                    Bindable = config.GetBindable<bool>(OsuSetting.AutoCursorSize)
+                    Current = config.GetBindable<bool>(OsuSetting.AutoCursorSize)
+                },
+                new SettingsCheckbox
+                {
+                    LabelText = "Beatmap skins",
+                    Current = config.GetBindable<bool>(OsuSetting.BeatmapSkins)
+                },
+                new SettingsCheckbox
+                {
+                    LabelText = "Beatmap hitsounds",
+                    Current = config.GetBindable<bool>(OsuSetting.BeatmapHitsounds)
                 },
             };
 
-            skins.ItemAdded += onItemsChanged;
-            skins.ItemRemoved += onItemsChanged;
+            managerUpdated = skins.ItemUpdated.GetBoundCopy();
+            managerUpdated.BindValueChanged(itemUpdated);
 
-            reloadSkins();
+            managerRemoved = skins.ItemRemoved.GetBoundCopy();
+            managerRemoved.BindValueChanged(itemRemoved);
 
-            skinDropdown.Bindable = config.GetBindable<int>(OsuSetting.Skin);
+            config.BindWith(OsuSetting.Skin, configBindable);
+
+            skinDropdown.Current = dropdownBindable;
+            updateItems();
+
+            // Todo: This should not be necessary when OsuConfigManager is databased
+            if (skinDropdown.Items.All(s => s.ID != configBindable.Value))
+                configBindable.Value = 0;
+
+            configBindable.BindValueChanged(id => dropdownBindable.Value = skinDropdown.Items.Single(s => s.ID == id.NewValue), true);
+            dropdownBindable.BindValueChanged(skin =>
+            {
+                if (skin.NewValue == random_skin_info)
+                {
+                    skins.SelectRandomSkin();
+                    return;
+                }
+
+                configBindable.Value = skin.NewValue.ID;
+            });
         }
 
-        private void reloadSkins() => skinDropdown.Items = skins.GetAllUsableSkins().Select(s => new KeyValuePair<string, int>(s.ToString(), s.ID));
-
-        private void onItemsChanged(SkinInfo _) => Schedule(reloadSkins);
-
-        protected override void Dispose(bool isDisposing)
+        private void updateItems()
         {
-            base.Dispose(isDisposing);
+            skinItems = skins.GetAllUsableSkins();
 
-            if (skins != null)
+            // insert after lazer built-in skins
+            int firstNonDefault = skinItems.FindIndex(s => s.ID > 0);
+            if (firstNonDefault < 0)
+                firstNonDefault = skinItems.Count;
+
+            skinItems.Insert(firstNonDefault, random_skin_info);
+
+            skinDropdown.Items = skinItems;
+        }
+
+        private void itemUpdated(ValueChangedEvent<WeakReference<SkinInfo>> weakItem)
+        {
+            if (weakItem.NewValue.TryGetTarget(out var item))
+                Schedule(() => skinDropdown.Items = skinDropdown.Items.Where(i => !i.Equals(item)).Append(item).ToArray());
+        }
+
+        private void itemRemoved(ValueChangedEvent<WeakReference<SkinInfo>> weakItem)
+        {
+            if (weakItem.NewValue.TryGetTarget(out var item))
+                Schedule(() => skinDropdown.Items = skinDropdown.Items.Where(i => i.ID != item.ID).ToArray());
+        }
+
+        private class SizeSlider : OsuSliderBar<float>
+        {
+            public override string TooltipText => Current.Value.ToString(@"0.##x");
+        }
+
+        private class SkinSettingsDropdown : SettingsDropdown<SkinInfo>
+        {
+            protected override OsuDropdown<SkinInfo> CreateDropdown() => new SkinDropdownControl();
+
+            private class SkinDropdownControl : DropdownControl
             {
-                skins.ItemAdded -= onItemsChanged;
-                skins.ItemRemoved -= onItemsChanged;
+                protected override string GenerateItemText(SkinInfo item) => item.ToString();
             }
         }
 
-        private class SizeSlider : OsuSliderBar<double>
+        private class ExportSkinButton : SettingsButton
         {
-            public override string TooltipText => Current.Value.ToString(@"0.##x");
+            [Resolved]
+            private SkinManager skins { get; set; }
+
+            private Bindable<Skin> currentSkin;
+
+            [BackgroundDependencyLoader]
+            private void load()
+            {
+                Text = "Export selected skin";
+                Action = export;
+
+                currentSkin = skins.CurrentSkin.GetBoundCopy();
+                currentSkin.BindValueChanged(skin => Enabled.Value = skin.NewValue.SkinInfo.ID > 0, true);
+            }
+
+            private void export()
+            {
+                try
+                {
+                    skins.Export(currentSkin.Value.SkinInfo);
+                }
+                catch (Exception e)
+                {
+                    Logger.Log($"Could not export current skin: {e.Message}", level: LogLevel.Error);
+                }
+            }
         }
     }
 }

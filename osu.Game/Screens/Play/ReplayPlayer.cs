@@ -1,23 +1,39 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using osu.Game.Rulesets.Replays;
+using osu.Game.Scoring;
+using osu.Game.Screens.Ranking;
 
 namespace osu.Game.Screens.Play
 {
     public class ReplayPlayer : Player
     {
-        public Replay Replay;
+        protected readonly Score Score;
 
-        public ReplayPlayer(Replay replay)
+        // Disallow replays from failing. (see https://github.com/ppy/osu/issues/6108)
+        protected override bool CheckModsAllowFailure() => false;
+
+        public ReplayPlayer(Score score, bool allowPause = true, bool showResults = true)
+            : base(allowPause, showResults)
         {
-            Replay = replay;
+            Score = score;
         }
 
-        protected override void LoadComplete()
+        protected override void PrepareReplay()
         {
-            base.LoadComplete();
-            RulesetContainer.SetReplay(Replay);
+            DrawableRuleset?.SetReplayScore(Score);
+        }
+
+        protected override ResultsScreen CreateResults(ScoreInfo score) => new SoloResultsScreen(score, false);
+
+        protected override ScoreInfo CreateScore()
+        {
+            var baseScore = base.CreateScore();
+
+            // Since the replay score doesn't contain statistics, we'll pass them through here.
+            Score.ScoreInfo.HitEvents = baseScore.HitEvents;
+
+            return Score.ScoreInfo;
         }
     }
 }

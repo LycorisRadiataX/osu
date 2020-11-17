@@ -1,50 +1,43 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using Newtonsoft.Json;
+using osu.Framework.Testing;
 using osu.Game.Database;
 using osu.Game.IO.Serialization;
 using osu.Game.Rulesets;
+using osu.Game.Scoring;
 
 namespace osu.Game.Beatmaps
 {
+    [ExcludeFromDynamicCompile]
     [Serializable]
     public class BeatmapInfo : IEquatable<BeatmapInfo>, IJsonSerializable, IHasPrimaryKey
     {
-        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
-        [JsonIgnore]
         public int ID { get; set; }
 
-        //TODO: should be in database
         public int BeatmapVersion;
 
         private int? onlineBeatmapID;
-        private int? onlineBeatmapSetID;
 
         [JsonProperty("id")]
         public int? OnlineBeatmapID
         {
-            get { return onlineBeatmapID; }
-            set { onlineBeatmapID = value > 0 ? value : null; }
-        }
-
-        [JsonProperty("beatmapset_id")]
-        [NotMapped]
-        public int? OnlineBeatmapSetID
-        {
-            get { return onlineBeatmapSetID; }
-            set { onlineBeatmapSetID = value > 0 ? value : null; }
+            get => onlineBeatmapID;
+            set => onlineBeatmapID = value > 0 ? value : null;
         }
 
         [JsonIgnore]
         public int BeatmapSetInfoID { get; set; }
 
+        public BeatmapSetOnlineStatus Status { get; set; } = BeatmapSetOnlineStatus.None;
+
         [Required]
-        [JsonIgnore]
         public BeatmapSetInfo BeatmapSet { get; set; }
 
         public BeatmapMetadata Metadata { get; set; }
@@ -59,6 +52,19 @@ namespace osu.Game.Beatmaps
 
         [NotMapped]
         public BeatmapOnlineInfo OnlineInfo { get; set; }
+
+        [NotMapped]
+        public int? MaxCombo { get; set; }
+
+        /// <summary>
+        /// The playable length in milliseconds of this beatmap.
+        /// </summary>
+        public double Length { get; set; }
+
+        /// <summary>
+        /// The most common BPM of this beatmap.
+        /// </summary>
+        public double BPM { get; set; }
 
         public string Path { get; set; }
 
@@ -75,9 +81,9 @@ namespace osu.Game.Beatmaps
         public string MD5Hash { get; set; }
 
         // General
-        public int AudioLeadIn { get; set; }
-        public bool Countdown { get; set; }
-        public float StackLeniency { get; set; }
+        public double AudioLeadIn { get; set; }
+        public bool Countdown { get; set; } = true;
+        public float StackLeniency { get; set; } = 0.7f;
         public bool SpecialStyle { get; set; }
 
         public int RulesetID { get; set; }
@@ -86,32 +92,32 @@ namespace osu.Game.Beatmaps
 
         public bool LetterboxInBreaks { get; set; }
         public bool WidescreenStoryboard { get; set; }
+        public bool EpilepsyWarning { get; set; }
 
         // Editor
         // This bookmarks stuff is necessary because DB doesn't know how to store int[]
         [JsonIgnore]
         public string StoredBookmarks
         {
-            get { return string.Join(",", Bookmarks); }
+            get => string.Join(',', Bookmarks);
             set
             {
                 if (string.IsNullOrEmpty(value))
                 {
-                    Bookmarks = new int[0];
+                    Bookmarks = Array.Empty<int>();
                     return;
                 }
 
                 Bookmarks = value.Split(',').Select(v =>
                 {
-                    int val;
-                    bool result = int.TryParse(v, out val);
+                    bool result = int.TryParse(v, out int val);
                     return new { result, val };
                 }).Where(p => p.result).Select(p => p.val).ToArray();
             }
         }
 
         [NotMapped]
-        public int[] Bookmarks { get; set; } = new int[0];
+        public int[] Bookmarks { get; set; } = Array.Empty<int>();
 
         public double DistanceSpacing { get; set; }
         public int BeatDivisor { get; set; }
@@ -124,7 +130,25 @@ namespace osu.Game.Beatmaps
         [JsonProperty("difficulty_rating")]
         public double StarDifficulty { get; set; }
 
-        public override string ToString() => $"{Metadata} [{Version}]";
+        /// <summary>
+        /// Currently only populated for beatmap deletion. Use <see cref="ScoreManager"/> to query scores.
+        /// </summary>
+        public List<ScoreInfo> Scores { get; set; }
+
+        [JsonIgnore]
+        public DifficultyRating DifficultyRating => BeatmapDifficultyCache.GetDifficultyRating(StarDifficulty);
+
+        public string[] SearchableTerms => new[]
+        {
+            Version
+        }.Concat(Metadata?.SearchableTerms ?? Enumerable.Empty<string>()).Where(s => !string.IsNullOrEmpty(s)).ToArray();
+
+        public override string ToString()
+        {
+            string version = string.IsNullOrEmpty(Version) ? string.Empty : $"[{Version}]";
+
+            return $"{Metadata} {version}".Trim();
+        }
 
         public bool Equals(BeatmapInfo other)
         {
@@ -141,8 +165,8 @@ namespace osu.Game.Beatmaps
                                                       (Metadata ?? BeatmapSet.Metadata).AudioFile == (other.Metadata ?? other.BeatmapSet.Metadata).AudioFile;
 
         public bool BackgroundEquals(BeatmapInfo other) => other != null && BeatmapSet != null && other.BeatmapSet != null &&
-                                                      BeatmapSet.Hash == other.BeatmapSet.Hash &&
-                                                      (Metadata ?? BeatmapSet.Metadata).BackgroundFile == (other.Metadata ?? other.BeatmapSet.Metadata).BackgroundFile;
+                                                           BeatmapSet.Hash == other.BeatmapSet.Hash &&
+                                                           (Metadata ?? BeatmapSet.Metadata).BackgroundFile == (other.Metadata ?? other.BeatmapSet.Metadata).BackgroundFile;
 
         /// <summary>
         /// Returns a shallow-clone of this <see cref="BeatmapInfo"/>.

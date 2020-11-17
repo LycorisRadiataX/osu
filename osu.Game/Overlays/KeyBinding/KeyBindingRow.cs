@@ -1,5 +1,5 @@
-// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System.Collections.Generic;
 using System.Linq;
@@ -8,15 +8,17 @@ using osu.Framework.Extensions;
 using osu.Framework.Extensions.Color4Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
+using osu.Framework.Graphics.Effects;
 using osu.Framework.Graphics.Shapes;
-using osu.Framework.Input;
 using osu.Framework.Input.Bindings;
+using osu.Framework.Input.Events;
 using osu.Game.Graphics;
-using osu.Game.Graphics.Containers;
 using osu.Game.Graphics.Sprites;
+using osu.Game.Graphics.UserInterface;
 using osu.Game.Input;
-using OpenTK.Graphics;
-using OpenTK.Input;
+using osuTK;
+using osuTK.Graphics;
+using osuTK.Input;
 
 namespace osu.Game.Overlays.KeyBinding
 {
@@ -35,7 +37,7 @@ namespace osu.Game.Overlays.KeyBinding
 
         public bool MatchingFilter
         {
-            get { return matchingFilter; }
+            get => matchingFilter;
             set
             {
                 matchingFilter = value;
@@ -43,12 +45,13 @@ namespace osu.Game.Overlays.KeyBinding
             }
         }
 
-        private OsuSpriteText text;
-        private OsuTextFlowContainer pressAKey;
+        public bool FilteringActive { get; set; }
 
+        private OsuSpriteText text;
+        private FillFlowContainer cancelAndClearButtons;
         private FillFlowContainer<KeyButton> buttons;
 
-        public IEnumerable<string> FilterTerms => bindings.Select(b => b.KeyCombination.ReadableString()).Prepend(text.Text);
+        public IEnumerable<string> FilterTerms => bindings.Select(b => b.KeyCombination.ReadableString()).Prepend((string)text.Text);
 
         public KeyBindingRow(object action, IEnumerable<Framework.Input.Bindings.KeyBinding> bindings)
         {
@@ -62,13 +65,12 @@ namespace osu.Game.Overlays.KeyBinding
             CornerRadius = padding;
         }
 
-        private KeyBindingStore store;
+        [Resolved]
+        private KeyBindingStore store { get; set; }
 
         [BackgroundDependencyLoader]
-        private void load(OsuColour colours, KeyBindingStore store)
+        private void load(OsuColour colours)
         {
-            this.store = store;
-
             EdgeEffect = new EdgeEffectParameters
             {
                 Radius = 2,
@@ -96,14 +98,19 @@ namespace osu.Game.Overlays.KeyBinding
                     Anchor = Anchor.TopRight,
                     Origin = Anchor.TopRight
                 },
-                pressAKey = new OsuTextFlowContainer
+                cancelAndClearButtons = new FillFlowContainer
                 {
-                    Text = "Press a key to change binding, Shift+Delete to delete, Escape to cancel.",
-                    RelativeSizeAxes = Axes.X,
-                    AutoSizeAxes = Axes.Y,
-                    Margin = new MarginPadding(padding),
+                    AutoSizeAxes = Axes.Both,
+                    Padding = new MarginPadding(padding) { Top = height + padding * 2 },
+                    Anchor = Anchor.TopRight,
+                    Origin = Anchor.TopRight,
                     Alpha = 0,
-                    Colour = colours.YellowDark
+                    Spacing = new Vector2(5),
+                    Children = new Drawable[]
+                    {
+                        new CancelButton { Action = finalise },
+                        new ClearButton { Action = clear },
+                    },
                 }
             };
 
@@ -114,6 +121,7 @@ namespace osu.Game.Overlays.KeyBinding
         public void RestoreDefaults()
         {
             int i = 0;
+
             foreach (var d in Defaults)
             {
                 var button = buttons[i++];
@@ -122,18 +130,18 @@ namespace osu.Game.Overlays.KeyBinding
             }
         }
 
-        protected override bool OnHover(InputState state)
+        protected override bool OnHover(HoverEvent e)
         {
             FadeEdgeEffectTo(1, transition_time, Easing.OutQuint);
 
-            return base.OnHover(state);
+            return base.OnHover(e);
         }
 
-        protected override void OnHoverLost(InputState state)
+        protected override void OnHoverLost(HoverLostEvent e)
         {
             FadeEdgeEffectTo(0, transition_time, Easing.OutQuint);
 
-            base.OnHoverLost(state);
+            base.OnHoverLost(e);
         }
 
         public override bool AcceptsFocus => bindTarget == null;
@@ -146,16 +154,16 @@ namespace osu.Game.Overlays.KeyBinding
 
         private bool isModifier(Key k) => k < Key.F1;
 
-        protected override bool OnClick(InputState state) => true;
+        protected override bool OnClick(ClickEvent e) => true;
 
-        protected override bool OnMouseDown(InputState state, MouseDownEventArgs args)
+        protected override bool OnMouseDown(MouseDownEvent e)
         {
             if (!HasFocus || !bindTarget.IsHovered)
-                return base.OnMouseDown(state, args);
+                return base.OnMouseDown(e);
 
             if (!AllowMainMouseButtons)
             {
-                switch (args.Button)
+                switch (e.Button)
                 {
                     case MouseButton.Left:
                     case MouseButton.Right:
@@ -163,93 +171,114 @@ namespace osu.Game.Overlays.KeyBinding
                 }
             }
 
-            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(state));
+            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(e.CurrentState));
             return true;
         }
 
-        protected override bool OnMouseUp(InputState state, MouseUpEventArgs args)
+        protected override void OnMouseUp(MouseUpEvent e)
         {
             // don't do anything until the last button is released.
-            if (!HasFocus || state.Mouse.Buttons.Any())
-                return base.OnMouseUp(state, args);
+            if (!HasFocus || e.HasAnyButtonPressed)
+            {
+                base.OnMouseUp(e);
+                return;
+            }
 
             if (bindTarget.IsHovered)
                 finalise();
-            else
+            // prevent updating bind target before clear button's action
+            else if (!cancelAndClearButtons.Any(b => b.IsHovered))
                 updateBindTarget();
-            return true;
         }
 
-        protected override bool OnWheel(InputState state)
+        protected override bool OnScroll(ScrollEvent e)
         {
             if (HasFocus)
             {
                 if (bindTarget.IsHovered)
                 {
-                    bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(state));
+                    bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(e.CurrentState, e.ScrollDelta));
                     finalise();
                     return true;
                 }
             }
 
-            return base.OnWheel(state);
+            return base.OnScroll(e);
         }
 
-        protected override bool OnKeyDown(InputState state, KeyDownEventArgs args)
+        protected override bool OnKeyDown(KeyDownEvent e)
         {
             if (!HasFocus)
                 return false;
 
-            switch (args.Key)
+            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(e.CurrentState));
+            if (!isModifier(e.Key)) finalise();
+
+            return true;
+        }
+
+        protected override void OnKeyUp(KeyUpEvent e)
+        {
+            if (!HasFocus)
             {
-                case Key.Escape:
-                    finalise();
-                    return true;
-                case Key.Delete:
-                {
-                    if (state.Keyboard.ShiftPressed)
-                    {
-                        bindTarget.UpdateKeyCombination(InputKey.None);
-                        finalise();
-                        return true;
-                    }
-
-                    break;
-                }
+                base.OnKeyUp(e);
+                return;
             }
 
-            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(state));
-            if (!isModifier(args.Key)) finalise();
-
-            return true;
-        }
-
-        protected override bool OnKeyUp(InputState state, KeyUpEventArgs args)
-        {
-            if (!HasFocus) return base.OnKeyUp(state, args);
-
             finalise();
-            return true;
         }
 
-        protected override bool OnJoystickPress(InputState state, Framework.Input.JoystickEventArgs args)
+        protected override bool OnJoystickPress(JoystickPressEvent e)
         {
             if (!HasFocus)
                 return false;
 
-            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(state));
+            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(e.CurrentState));
             finalise();
 
             return true;
         }
 
-        protected override bool OnJoystickRelease(InputState state, Framework.Input.JoystickEventArgs args)
+        protected override void OnJoystickRelease(JoystickReleaseEvent e)
         {
             if (!HasFocus)
-                return base.OnJoystickRelease(state, args);
+            {
+                base.OnJoystickRelease(e);
+                return;
+            }
 
             finalise();
+        }
+
+        protected override bool OnMidiDown(MidiDownEvent e)
+        {
+            if (!HasFocus)
+                return false;
+
+            bindTarget.UpdateKeyCombination(KeyCombination.FromInputState(e.CurrentState));
+            finalise();
+
             return true;
+        }
+
+        protected override void OnMidiUp(MidiUpEvent e)
+        {
+            if (!HasFocus)
+            {
+                base.OnMidiUp(e);
+                return;
+            }
+
+            finalise();
+        }
+
+        private void clear()
+        {
+            if (bindTarget == null)
+                return;
+
+            bindTarget.UpdateKeyCombination(InputKey.None);
+            finalise();
         }
 
         private void finalise()
@@ -269,28 +298,31 @@ namespace osu.Game.Overlays.KeyBinding
             if (HasFocus)
                 GetContainingInputManager().ChangeFocus(null);
 
-            pressAKey.FadeOut(300, Easing.OutQuint);
-            pressAKey.Padding = new MarginPadding { Top = height, Bottom = -pressAKey.DrawHeight };
+            cancelAndClearButtons.FadeOut(300, Easing.OutQuint);
+            cancelAndClearButtons.BypassAutoSizeAxes |= Axes.Y;
         }
 
-        protected override void OnFocus(InputState state)
+        protected override void OnFocus(FocusEvent e)
         {
             AutoSizeDuration = 500;
             AutoSizeEasing = Easing.OutQuint;
 
-            pressAKey.FadeIn(300, Easing.OutQuint);
-            pressAKey.Padding = new MarginPadding { Top = height };
+            cancelAndClearButtons.FadeIn(300, Easing.OutQuint);
+            cancelAndClearButtons.BypassAutoSizeAxes &= ~Axes.Y;
 
             updateBindTarget();
-            base.OnFocus(state);
+            base.OnFocus(e);
         }
 
-        protected override void OnFocusLost(InputState state)
+        protected override void OnFocusLost(FocusLostEvent e)
         {
             finalise();
-            base.OnFocusLost(state);
+            base.OnFocusLost(e);
         }
 
+        /// <summary>
+        /// Updates the bind target to the currently hovered key button or the first if clicked anywhere else.
+        /// </summary>
         private void updateBindTarget()
         {
             if (bindTarget != null) bindTarget.IsBinding = false;
@@ -298,7 +330,34 @@ namespace osu.Game.Overlays.KeyBinding
             if (bindTarget != null) bindTarget.IsBinding = true;
         }
 
-        private class KeyButton : Container
+        private class CancelButton : TriangleButton
+        {
+            public CancelButton()
+            {
+                Text = "Cancel";
+                Size = new Vector2(80, 20);
+            }
+        }
+
+        public class ClearButton : TriangleButton
+        {
+            public ClearButton()
+            {
+                Text = "Clear";
+                Size = new Vector2(80, 20);
+            }
+
+            [BackgroundDependencyLoader]
+            private void load(OsuColour colours)
+            {
+                BackgroundColour = colours.Pink;
+
+                Triangles.ColourDark = colours.PinkDark;
+                Triangles.ColourLight = colours.PinkLight;
+            }
+        }
+
+        public class KeyButton : Container
         {
             public readonly Framework.Input.Bindings.KeyBinding KeyBinding;
 
@@ -311,10 +370,11 @@ namespace osu.Game.Overlays.KeyBinding
 
             public bool IsBinding
             {
-                get { return isBinding; }
+                get => isBinding;
                 set
                 {
                     if (value == isBinding) return;
+
                     isBinding = value;
 
                     updateHoverState();
@@ -351,8 +411,7 @@ namespace osu.Game.Overlays.KeyBinding
                     },
                     Text = new OsuSpriteText
                     {
-                        Font = "Venera",
-                        TextSize = 10,
+                        Font = OsuFont.Numeric.With(size: 10),
                         Margin = new MarginPadding(5),
                         Anchor = Anchor.Centre,
                         Origin = Anchor.Centre,
@@ -367,16 +426,16 @@ namespace osu.Game.Overlays.KeyBinding
                 hoverColour = colours.YellowDark;
             }
 
-            protected override bool OnHover(InputState state)
+            protected override bool OnHover(HoverEvent e)
             {
                 updateHoverState();
-                return base.OnHover(state);
+                return base.OnHover(e);
             }
 
-            protected override void OnHoverLost(InputState state)
+            protected override void OnHoverLost(HoverLostEvent e)
             {
                 updateHoverState();
-                base.OnHoverLost(state);
+                base.OnHoverLost(e);
             }
 
             private void updateHoverState()

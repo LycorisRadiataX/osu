@@ -1,202 +1,88 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
-using OpenTK.Graphics;
-using osu.Framework.Extensions.Color4Extensions;
+using System.Linq;
+using osuTK.Graphics;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
-using osu.Framework.Graphics.Shapes;
-using osu.Framework.Graphics.Colour;
 using osu.Game.Graphics;
 using osu.Game.Rulesets.Objects.Drawables;
-using System;
-using System.Linq;
+using osu.Framework.Allocation;
+using osu.Framework.Bindables;
+using osu.Framework.Graphics.Pooling;
 using osu.Framework.Input.Bindings;
 using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Mania.UI.Components;
 using osu.Game.Rulesets.UI.Scrolling;
+using osu.Game.Skinning;
+using osuTK;
+using osu.Game.Rulesets.Mania.Beatmaps;
+using osu.Game.Rulesets.Mania.Objects.Drawables;
 
 namespace osu.Game.Rulesets.Mania.UI
 {
+    [Cached]
     public class Column : ScrollingPlayfield, IKeyBindingHandler<ManiaAction>, IHasAccentColour
     {
-        private const float key_icon_size = 10;
-        private const float key_icon_corner_radius = 3;
-        private const float key_icon_border_radius = 2;
+        public const float COLUMN_WIDTH = 80;
+        public const float SPECIAL_COLUMN_WIDTH = 70;
 
-        private const float hit_target_height = 10;
-        private const float hit_target_bar_height = 2;
+        /// <summary>
+        /// The index of this column as part of the whole playfield.
+        /// </summary>
+        public readonly int Index;
 
-        private const float column_width = 45;
-        private const float special_column_width = 70;
+        public readonly Bindable<ManiaAction> Action = new Bindable<ManiaAction>();
 
-        public ManiaAction Action;
-
-        private readonly Box background;
-        private readonly Container hitTargetBar;
-        private readonly Container keyIcon;
-
+        public readonly ColumnHitObjectArea HitObjectArea;
         internal readonly Container TopLevelContainer;
-        private readonly Container explosionContainer;
+        private readonly DrawablePool<PoolableHitExplosion> hitExplosionPool;
+        private readonly OrderedHitPolicy hitPolicy;
 
-        protected override Container<Drawable> Content => content;
-        private readonly Container<Drawable> content;
+        public Container UnderlayElements => HitObjectArea.UnderlayElements;
 
-        private const float opacity_released = 0.1f;
-        private const float opacity_pressed = 0.25f;
-
-        public Column()
-            : base(ScrollingDirection.Up)
+        public Column(int index)
         {
-            RelativeSizeAxes = Axes.Y;
-            Width = column_width;
+            Index = index;
 
-            InternalChildren = new Drawable[]
+            RelativeSizeAxes = Axes.Y;
+            Width = COLUMN_WIDTH;
+
+            Drawable background = new SkinnableDrawable(new ManiaSkinComponent(ManiaSkinComponents.ColumnBackground, Index), _ => new DefaultColumnBackground())
             {
-                background = new Box
+                RelativeSizeAxes = Axes.Both
+            };
+
+            InternalChildren = new[]
+            {
+                hitExplosionPool = new DrawablePool<PoolableHitExplosion>(5),
+                // For input purposes, the background is added at the highest depth, but is then proxied back below all other elements
+                background.CreateProxy(),
+                HitObjectArea = new ColumnHitObjectArea(Index, HitObjectContainer) { RelativeSizeAxes = Axes.Both },
+                new SkinnableDrawable(new ManiaSkinComponent(ManiaSkinComponents.KeyArea, Index), _ => new DefaultKeyArea())
                 {
-                    Name = "Background",
-                    RelativeSizeAxes = Axes.Both,
-                    Alpha = opacity_released
+                    RelativeSizeAxes = Axes.Both
                 },
-                new Container
-                {
-                    Name = "Hit target + hit objects",
-                    RelativeSizeAxes = Axes.Both,
-                    Padding = new MarginPadding { Top = ManiaStage.HIT_TARGET_POSITION },
-                    Children = new Drawable[]
-                    {
-                        new Container
-                        {
-                            Name = "Hit target",
-                            RelativeSizeAxes = Axes.X,
-                            Height = hit_target_height,
-                            Children = new Drawable[]
-                            {
-                                new Box
-                                {
-                                    Name = "Background",
-                                    RelativeSizeAxes = Axes.Both,
-                                    Colour = Color4.Black
-                                },
-                                hitTargetBar = new Container
-                                {
-                                    Name = "Bar",
-                                    RelativeSizeAxes = Axes.X,
-                                    Height = hit_target_bar_height,
-                                    Masking = true,
-                                    Children = new[]
-                                    {
-                                        new Box
-                                        {
-                                            RelativeSizeAxes = Axes.Both
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        content = new Container
-                        {
-                            Name = "Hit objects",
-                            RelativeSizeAxes = Axes.Both,
-                        },
-                        // For column lighting, we need to capture input events before the notes
-                        new InputTarget
-                        {
-                            Pressed = onPressed,
-                            Released = onReleased
-                        },
-                        explosionContainer = new Container
-                        {
-                            Name = "Hit explosions",
-                            RelativeSizeAxes = Axes.Both
-                        }
-                    }
-                },
-                new Container
-                {
-                    Name = "Key",
-                    RelativeSizeAxes = Axes.X,
-                    Height = ManiaStage.HIT_TARGET_POSITION,
-                    Children = new Drawable[]
-                    {
-                        new Box
-                        {
-                            Name = "Key gradient",
-                            RelativeSizeAxes = Axes.Both,
-                            Colour = ColourInfo.GradientVertical(Color4.Black, Color4.Black.Opacity(0)),
-                            Alpha = 0.5f
-                        },
-                        keyIcon = new Container
-                        {
-                            Name = "Key icon",
-                            Anchor = Anchor.Centre,
-                            Origin = Anchor.Centre,
-                            Size = new Vector2(key_icon_size),
-                            Masking = true,
-                            CornerRadius = key_icon_corner_radius,
-                            BorderThickness = 2,
-                            BorderColour = Color4.White, // Not true
-                            Children = new[]
-                            {
-                                new Box
-                                {
-                                    RelativeSizeAxes = Axes.Both,
-                                    Alpha = 0,
-                                    AlwaysPresent = true
-                                }
-                            }
-                        }
-                    }
-                },
+                background,
                 TopLevelContainer = new Container { RelativeSizeAxes = Axes.Both }
             };
 
-            TopLevelContainer.Add(explosionContainer.CreateProxy());
+            hitPolicy = new OrderedHitPolicy(HitObjectContainer);
+
+            TopLevelContainer.Add(HitObjectArea.Explosions.CreateProxy());
         }
 
-        public override Axes RelativeSizeAxes => Axes.Y;
+        public ColumnType ColumnType { get; set; }
 
-        private bool isSpecial;
-        public bool IsSpecial
+        public bool IsSpecial => ColumnType == ColumnType.Special;
+
+        public Color4 AccentColour { get; set; }
+
+        protected override IReadOnlyDependencyContainer CreateChildDependencies(IReadOnlyDependencyContainer parent)
         {
-            get { return isSpecial; }
-            set
-            {
-                if (isSpecial == value)
-                    return;
-                isSpecial = value;
-
-                Width = isSpecial ? special_column_width : column_width;
-            }
-        }
-
-        private Color4 accentColour;
-        public Color4 AccentColour
-        {
-            get { return accentColour; }
-            set
-            {
-                if (accentColour == value)
-                    return;
-                accentColour = value;
-
-                background.Colour = accentColour;
-
-                hitTargetBar.EdgeEffect = new EdgeEffectParameters
-                {
-                    Type = EdgeEffectType.Glow,
-                    Radius = 5,
-                    Colour = accentColour.Opacity(0.5f),
-                };
-
-                keyIcon.EdgeEffect = new EdgeEffectParameters
-                {
-                    Type = EdgeEffectType.Glow,
-                    Radius = 5,
-                    Colour = accentColour.Opacity(0.5f),
-                };
-            }
+            var dependencies = new DependencyContainer(base.CreateChildDependencies(parent));
+            dependencies.CacheAs<IBindable<ManiaAction>>(Action);
+            return dependencies;
         }
 
         /// <summary>
@@ -205,72 +91,57 @@ namespace osu.Game.Rulesets.Mania.UI
         /// <param name="hitObject">The DrawableHitObject to add.</param>
         public override void Add(DrawableHitObject hitObject)
         {
-            hitObject.AccentColour = AccentColour;
-            hitObject.OnJudgement += OnJudgement;
+            hitObject.AccentColour.Value = AccentColour;
+            hitObject.OnNewResult += OnNewResult;
 
-            HitObjects.Add(hitObject);
+            DrawableManiaHitObject maniaObject = (DrawableManiaHitObject)hitObject;
+            maniaObject.CheckHittable = hitPolicy.IsHittable;
+
+            HitObjectContainer.Add(hitObject);
         }
 
-        internal void OnJudgement(DrawableHitObject judgedObject, Judgement judgement)
+        public override bool Remove(DrawableHitObject h)
         {
-            if (!judgement.IsHit)
+            if (!base.Remove(h))
+                return false;
+
+            h.OnNewResult -= OnNewResult;
+            return true;
+        }
+
+        internal void OnNewResult(DrawableHitObject judgedObject, JudgementResult result)
+        {
+            if (result.IsHit)
+                hitPolicy.HandleHit(judgedObject);
+
+            if (!result.IsHit || !DisplayJudgements.Value)
                 return;
 
-            explosionContainer.Add(new HitExplosion(judgedObject));
-        }
-
-        private bool onPressed(ManiaAction action)
-        {
-            if (action == Action)
-            {
-                background.FadeTo(opacity_pressed, 50, Easing.OutQuint);
-                keyIcon.ScaleTo(1.4f, 50, Easing.OutQuint);
-            }
-
-            return false;
-        }
-
-        private bool onReleased(ManiaAction action)
-        {
-            if (action == Action)
-            {
-                background.FadeTo(opacity_released, 800, Easing.OutQuart);
-                keyIcon.ScaleTo(1f, 400, Easing.OutQuart);
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// This is a simple container which delegates various input events that have to be captured before the notes.
-        /// </summary>
-        private class InputTarget : Container, IKeyBindingHandler<ManiaAction>
-        {
-            public Func<ManiaAction, bool> Pressed;
-            public Func<ManiaAction, bool> Released;
-
-            public InputTarget()
-            {
-                RelativeSizeAxes = Axes.Both;
-                AlwaysPresent = true;
-                Alpha = 0;
-            }
-
-            public bool OnPressed(ManiaAction action) => Pressed?.Invoke(action) ?? false;
-            public bool OnReleased(ManiaAction action) => Released?.Invoke(action) ?? false;
+            HitObjectArea.Explosions.Add(hitExplosionPool.Get(e => e.Apply(result)));
         }
 
         public bool OnPressed(ManiaAction action)
         {
-            if (action != Action)
+            if (action != Action.Value)
                 return false;
 
-            var hitObject = HitObjects.Objects.LastOrDefault(h => h.HitObject.StartTime > Time.Current) ?? HitObjects.Objects.FirstOrDefault();
-            hitObject?.PlaySamples();
+            var nextObject =
+                HitObjectContainer.AliveObjects.FirstOrDefault(h => h.HitObject.StartTime > Time.Current) ??
+                // fallback to non-alive objects to find next off-screen object
+                HitObjectContainer.Objects.FirstOrDefault(h => h.HitObject.StartTime > Time.Current) ??
+                HitObjectContainer.Objects.LastOrDefault();
+
+            nextObject?.PlaySamples();
 
             return true;
         }
 
-        public bool OnReleased(ManiaAction action) => false;
+        public void OnReleased(ManiaAction action)
+        {
+        }
+
+        public override bool ReceivePositionalInputAt(Vector2 screenSpacePos)
+            // This probably shouldn't exist as is, but the columns in the stage are separated by a 1px border
+            => DrawRectangle.Inflate(new Vector2(Stage.COLUMN_SPACING / 2, 0)).Contains(ToLocalSpace(screenSpacePos));
     }
 }

@@ -1,13 +1,14 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
+using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Game.Rulesets.Objects.Drawables;
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK;
+using osuTK.Graphics;
 using osu.Framework.Graphics.Shapes;
-using osu.Game.Rulesets.Osu.Judgements;
-using osu.Game.Rulesets.Scoring;
+using osu.Game.Skinning;
+using osu.Framework.Graphics.Containers;
 
 namespace osu.Game.Rulesets.Osu.Objects.Drawables
 {
@@ -15,56 +16,86 @@ namespace osu.Game.Rulesets.Osu.Objects.Drawables
     {
         public const double ANIM_DURATION = 150;
 
+        private const float default_tick_size = 16;
+
         public bool Tracking { get; set; }
 
-        public override bool DisplayJudgement => false;
+        public override bool DisplayResult => false;
 
-        public DrawableSliderTick(SliderTick sliderTick) : base(sliderTick)
+        private SkinnableDrawable scaleContainer;
+
+        public DrawableSliderTick()
+            : base(null)
         {
-            Size = new Vector2(16) * sliderTick.Scale;
+        }
 
-            Masking = true;
-            CornerRadius = Size.X / 2;
+        public DrawableSliderTick(SliderTick sliderTick)
+            : base(sliderTick)
+        {
+        }
 
+        [BackgroundDependencyLoader]
+        private void load()
+        {
+            Size = new Vector2(OsuHitObject.OBJECT_RADIUS * 2);
             Origin = Anchor.Centre;
 
-            BorderThickness = 2;
-            BorderColour = Color4.White;
-
-            InternalChildren = new Drawable[]
+            InternalChild = scaleContainer = new SkinnableDrawable(new OsuSkinComponent(OsuSkinComponents.SliderScorePoint), _ => new CircularContainer
             {
-                new Box
+                Masking = true,
+                Origin = Anchor.Centre,
+                Size = new Vector2(default_tick_size),
+                BorderThickness = default_tick_size / 4,
+                BorderColour = Color4.White,
+                Child = new Box
                 {
                     RelativeSizeAxes = Axes.Both,
-                    Colour = AccentColour,
+                    Colour = AccentColour.Value,
                     Alpha = 0.3f,
                 }
+            })
+            {
+                Anchor = Anchor.Centre,
+                Origin = Anchor.Centre,
             };
+
+            ScaleBindable.BindValueChanged(scale => scaleContainer.Scale = new Vector2(scale.NewValue));
         }
 
-        protected override void CheckForJudgements(bool userTriggered, double timeOffset)
+        protected override void OnParentReceived(DrawableHitObject parent)
+        {
+            base.OnParentReceived(parent);
+
+            Position = HitObject.Position - ((DrawableSlider)parent).HitObject.Position;
+        }
+
+        protected override void CheckForResult(bool userTriggered, double timeOffset)
         {
             if (timeOffset >= 0)
-                AddJudgement(new OsuJudgement { Result = Tracking ? HitResult.Great : HitResult.Miss });
+                ApplyResult(r => r.Type = Tracking ? r.Judgement.MaxResult : r.Judgement.MinResult);
         }
 
-        protected override void UpdatePreemptState()
+        protected override void UpdateInitialTransforms()
         {
             this.FadeOut().FadeIn(ANIM_DURATION);
             this.ScaleTo(0.5f).ScaleTo(1f, ANIM_DURATION * 4, Easing.OutElasticHalf);
         }
 
-        protected override void UpdateCurrentState(ArmedState state)
+        protected override void UpdateHitStateTransforms(ArmedState state)
         {
+            base.UpdateHitStateTransforms(state);
+
             switch (state)
             {
                 case ArmedState.Idle:
                     this.Delay(HitObject.TimePreempt).FadeOut();
                     break;
+
                 case ArmedState.Miss:
                     this.FadeOut(ANIM_DURATION);
                     this.FadeColour(Color4.Red, ANIM_DURATION / 2);
                     break;
+
                 case ArmedState.Hit:
                     this.FadeOut(ANIM_DURATION, Easing.OutQuint);
                     this.ScaleTo(Scale * 1.5f, ANIM_DURATION, Easing.Out);

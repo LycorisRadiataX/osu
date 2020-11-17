@@ -1,17 +1,23 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.Collections.Generic;
-using System.IO;
+using osu.Framework.Extensions;
 using osu.Framework.Logging;
-using OpenTK.Graphics;
+using osu.Game.Audio;
+using osu.Game.Beatmaps.ControlPoints;
+using osu.Game.IO;
+using osu.Game.Rulesets.Objects.Legacy;
+using osuTK.Graphics;
 
 namespace osu.Game.Beatmaps.Formats
 {
     public abstract class LegacyDecoder<T> : Decoder<T>
         where T : new()
     {
+        public const int LATEST_VERSION = 14;
+
         protected readonly int FormatVersion;
 
         protected LegacyDecoder(int version)
@@ -19,24 +25,26 @@ namespace osu.Game.Beatmaps.Formats
             FormatVersion = version;
         }
 
-        protected override void ParseStreamInto(StreamReader stream, T output)
+        protected override void ParseStreamInto(LineBufferedReader stream, T output)
         {
             Section section = Section.None;
 
             string line;
+
             while ((line = stream.ReadLine()) != null)
             {
                 if (ShouldSkipLine(line))
                     continue;
 
-                if (line.StartsWith(@"[") && line.EndsWith(@"]"))
+                if (line.StartsWith('[') && line.EndsWith(']'))
                 {
-                    if (!Enum.TryParse(line.Substring(1, line.Length - 2), out section))
+                    if (!Enum.TryParse(line[1..^1], out section))
                     {
-                        Logger.Log($"Unknown section \"{line}\" in {output}");
+                        Logger.Log($"Unknown section \"{line}\" in \"{output}\"");
                         section = Section.None;
                     }
 
+                    OnBeginNewSection(section);
                     continue;
                 }
 
@@ -46,64 +54,82 @@ namespace osu.Game.Beatmaps.Formats
                 }
                 catch (Exception e)
                 {
-                    Logger.Error(e, $"Failed to process line \"{line}\" into {output}");
+                    Logger.Log($"Failed to process line \"{line}\" into \"{output}\": {e.Message}", LoggingTarget.Runtime, LogLevel.Important);
                 }
             }
         }
 
-        protected virtual bool ShouldSkipLine(string line) => string.IsNullOrWhiteSpace(line) || line.StartsWith("//");
+        protected virtual bool ShouldSkipLine(string line) => string.IsNullOrWhiteSpace(line) || line.AsSpan().TrimStart().StartsWith("//".AsSpan(), StringComparison.Ordinal);
+
+        /// <summary>
+        /// Invoked when a new <see cref="Section"/> has been entered.
+        /// </summary>
+        /// <param name="section">The entered <see cref="Section"/>.</param>
+        protected virtual void OnBeginNewSection(Section section)
+        {
+        }
 
         protected virtual void ParseLine(T output, Section section, string line)
         {
+            line = StripComments(line);
+
             switch (section)
             {
                 case Section.Colours:
-                    handleColours(output, line);
+                    HandleColours(output, line);
                     return;
             }
         }
 
-        private bool hasComboColours;
+        protected string StripComments(string line)
+        {
+            var index = line.AsSpan().IndexOf("//".AsSpan());
+            if (index > 0)
+                return line.Substring(0, index);
 
-        private void handleColours(T output, string line)
+            return line;
+        }
+
+        protected void HandleColours<TModel>(TModel output, string line)
         {
             var pair = SplitKeyVal(line);
 
-            bool isCombo = pair.Key.StartsWith(@"Combo");
+            bool isCombo = pair.Key.StartsWith(@"Combo", StringComparison.Ordinal);
 
             string[] split = pair.Value.Split(',');
 
-            if (split.Length != 3)
-                throw new InvalidOperationException($@"Color specified in incorrect format (should be R,G,B): {pair.Value}");
+            if (split.Length != 3 && split.Length != 4)
+                throw new InvalidOperationException($@"Color specified in incorrect format (should be R,G,B or R,G,B,A): {pair.Value}");
 
-            if (!byte.TryParse(split[0], out var r) || !byte.TryParse(split[1], out var g) || !byte.TryParse(split[2], out var b))
+            Color4 colour;
+
+            try
+            {
+                byte alpha = split.Length == 4 ? byte.Parse(split[3]) : (byte)255;
+                colour = new Color4(byte.Parse(split[0]), byte.Parse(split[1]), byte.Parse(split[2]), alpha);
+            }
+            catch
+            {
                 throw new InvalidOperationException(@"Color must be specified with 8-bit integer components");
-
-            Color4 colour = new Color4(r, g, b, 255);
+            }
 
             if (isCombo)
             {
                 if (!(output is IHasComboColours tHasComboColours)) return;
 
-                if (!hasComboColours)
-                {
-                    // remove default colours.
-                    tHasComboColours.ComboColours.Clear();
-                    hasComboColours = true;
-                }
-
-                tHasComboColours.ComboColours.Add(colour);
+                tHasComboColours.AddComboColours(colour);
             }
             else
             {
                 if (!(output is IHasCustomColours tHasCustomColours)) return;
+
                 tHasCustomColours.CustomColours[pair.Key] = colour;
             }
         }
 
         protected KeyValuePair<string, string> SplitKeyVal(string line, char separator = ':')
         {
-            var split = line.Trim().Split(new[] { separator }, 2);
+            var split = line.Split(separator, 2);
 
             return new KeyValuePair<string, string>
             (
@@ -111,6 +137,8 @@ namespace osu.Game.Beatmaps.Formats
                 split.Length > 1 ? split[1].Trim() : string.Empty
             );
         }
+
+        protected string CleanFilename(string path) => path.Trim('"').ToStandardisedPath();
 
         protected enum Section
         {
@@ -124,48 +152,49 @@ namespace osu.Game.Beatmaps.Formats
             Colours,
             HitObjects,
             Variables,
-            Fonts
+            Fonts,
+            CatchTheBeat,
+            Mania,
         }
 
-        internal enum LegacySampleBank
+        [Obsolete("Do not use unless you're a legacy ruleset and 100% sure.")]
+        public class LegacyDifficultyControlPoint : DifficultyControlPoint
         {
-            None = 0,
-            Normal = 1,
-            Soft = 2,
-            Drum = 3
+            /// <summary>
+            /// Legacy BPM multiplier that introduces floating-point errors for rulesets that depend on it.
+            /// DO NOT USE THIS UNLESS 100% SURE.
+            /// </summary>
+            public readonly float BpmMultiplier;
+
+            public LegacyDifficultyControlPoint(double beatLength)
+            {
+                SpeedMultiplierBindable.Precision = double.Epsilon;
+
+                BpmMultiplier = beatLength < 0 ? Math.Clamp((float)-beatLength, 10, 10000) / 100f : 1;
+            }
         }
 
-        internal enum EventType
+        internal class LegacySampleControlPoint : SampleControlPoint
         {
-            Background = 0,
-            Video = 1,
-            Break = 2,
-            Colour = 3,
-            Sprite = 4,
-            Sample = 5,
-            Animation = 6
-        }
+            public int CustomSampleBank;
 
-        internal enum LegacyOrigins
-        {
-            TopLeft,
-            Centre,
-            CentreLeft,
-            TopRight,
-            BottomCentre,
-            TopCentre,
-            Custom,
-            CentreRight,
-            BottomLeft,
-            BottomRight
-        }
+            public override HitSampleInfo ApplyTo(HitSampleInfo hitSampleInfo)
+            {
+                var baseInfo = base.ApplyTo(hitSampleInfo);
 
-        internal enum StoryLayer
-        {
-            Background = 0,
-            Fail = 1,
-            Pass = 2,
-            Foreground = 3
+                if (baseInfo is ConvertHitObjectParser.LegacyHitSampleInfo legacy
+                    && legacy.CustomSampleBank == 0)
+                {
+                    legacy.CustomSampleBank = CustomSampleBank;
+                }
+
+                return baseInfo;
+            }
+
+            public override bool IsRedundant(ControlPoint existing)
+                => base.IsRedundant(existing)
+                   && existing is LegacySampleControlPoint existingSample
+                   && CustomSampleBank == existingSample.CustomSampleBank;
         }
     }
 }

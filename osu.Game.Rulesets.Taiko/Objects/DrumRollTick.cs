@@ -1,5 +1,9 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
+
+using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Scoring;
+using osu.Game.Rulesets.Taiko.Judgements;
 
 namespace osu.Game.Rulesets.Taiko.Objects
 {
@@ -20,5 +24,9 @@ namespace osu.Game.Rulesets.Taiko.Objects
         /// The time allowed to hit this tick.
         /// </summary>
         public double HitWindow => TickSpacing / 2;
+
+        public override Judgement CreateJudgement() => new TaikoDrumRollTickJudgement();
+
+        protected override HitWindows CreateHitWindows() => HitWindows.Empty;
     }
 }

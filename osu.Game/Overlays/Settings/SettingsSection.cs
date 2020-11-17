@@ -1,8 +1,8 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK;
+using osuTK.Graphics;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
@@ -19,11 +19,11 @@ namespace osu.Game.Overlays.Settings
         protected FillFlowContainer FlowContent;
         protected override Container<Drawable> Content => FlowContent;
 
-        public abstract FontAwesome Icon { get; }
+        public abstract Drawable CreateIcon();
         public abstract string Header { get; }
 
         public IEnumerable<IFilterable> FilterableChildren => Children.OfType<IFilterable>();
-        public IEnumerable<string> FilterTerms => new[] { Header };
+        public virtual IEnumerable<string> FilterTerms => new[] { Header };
 
         private const int header_size = 26;
         private const int header_margin = 25;
@@ -31,8 +31,10 @@ namespace osu.Game.Overlays.Settings
 
         public bool MatchingFilter
         {
-            set { this.FadeTo(value ? 1 : 0); }
+            set => this.FadeTo(value ? 1 : 0);
         }
+
+        public bool FilteringActive { get; set; }
 
         protected SettingsSection()
         {
@@ -73,14 +75,14 @@ namespace osu.Game.Overlays.Settings
                     },
                     RelativeSizeAxes = Axes.X,
                     AutoSizeAxes = Axes.Y,
-                    Children = new[]
+                    Children = new Drawable[]
                     {
                         new OsuSpriteText
                         {
-                            TextSize = header_size,
+                            Font = OsuFont.GetFont(size: header_size),
                             Text = Header,
                             Colour = colours.Yellow,
-                            Margin = new MarginPadding { Left = SettingsOverlay.CONTENT_MARGINS, Right = SettingsOverlay.CONTENT_MARGINS }
+                            Margin = new MarginPadding { Left = SettingsPanel.CONTENT_MARGINS, Right = SettingsPanel.CONTENT_MARGINS }
                         },
                         FlowContent
                     }

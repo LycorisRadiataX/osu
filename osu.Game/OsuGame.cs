@@ -1,8 +1,9 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using osu.Framework.Configuration;
 using osu.Framework.Screens;
 using osu.Game.Configuration;
@@ -14,25 +15,43 @@ using osu.Framework.Allocation;
 using osu.Game.Overlays.Toolbar;
 using osu.Game.Screens;
 using osu.Game.Screens.Menu;
-using OpenTK;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Humanizer;
+using JetBrains.Annotations;
 using osu.Framework.Audio;
+using osu.Framework.Bindables;
+using osu.Framework.Development;
+using osu.Framework.Extensions.IEnumerableExtensions;
+using osu.Framework.Graphics.Sprites;
 using osu.Framework.Input;
 using osu.Framework.Input.Bindings;
+using osu.Framework.Input.Events;
 using osu.Framework.Platform;
 using osu.Framework.Threading;
+using osu.Game.Beatmaps;
+using osu.Game.Collections;
 using osu.Game.Graphics;
-using osu.Game.Rulesets.Scoring;
+using osu.Game.Graphics.Containers;
+using osu.Game.Graphics.UserInterface;
+using osu.Game.Input;
 using osu.Game.Overlays.Notifications;
-using osu.Game.Rulesets;
-using osu.Game.Screens.Play;
 using osu.Game.Input.Bindings;
-using osu.Game.Rulesets.Mods;
+using osu.Game.Online.Chat;
+using osu.Game.Overlays.Music;
 using osu.Game.Skinning;
-using OpenTK.Graphics;
+using osuTK.Graphics;
 using osu.Game.Overlays.Volume;
+using osu.Game.Rulesets.Mods;
+using osu.Game.Scoring;
+using osu.Game.Screens.Play;
+using osu.Game.Screens.Ranking;
+using osu.Game.Screens.Select;
+using osu.Game.Updater;
+using osu.Game.Utils;
+using LogLevel = osu.Framework.Logging.LogLevel;
+using osu.Game.Users;
 
 namespace osu.Game
 {
@@ -44,81 +63,118 @@ namespace osu.Game
     {
         public Toolbar Toolbar;
 
-        private ChatOverlay chat;
+        private ChatOverlay chatOverlay;
 
-        private MusicController musicController;
+        private ChannelManager channelManager;
 
-        private NotificationOverlay notifications;
+        [NotNull]
+        private readonly NotificationOverlay notifications = new NotificationOverlay();
 
-        private DialogOverlay dialogOverlay;
+        private BeatmapListingOverlay beatmapListing;
 
-        private DirectOverlay direct;
+        private DashboardOverlay dashboard;
 
-        private SocialOverlay social;
+        private NewsOverlay news;
 
         private UserProfileOverlay userProfile;
 
         private BeatmapSetOverlay beatmapSetOverlay;
 
-        private ScreenshotManager screenshotManager;
+        [Cached]
+        private readonly ScreenshotManager screenshotManager = new ScreenshotManager();
+
+        protected SentryLogger SentryLogger;
 
         public virtual Storage GetStorageForStableInstall() => null;
 
-        private Intro intro
-        {
-            get
-            {
-                Screen s = screenStack;
-                while (s != null && !(s is Intro))
-                    s = s.ChildScreen;
-                return s as Intro;
-            }
-        }
+        public float ToolbarOffset => (Toolbar?.Position.Y ?? 0) + (Toolbar?.DrawHeight ?? 0);
 
-        public float ToolbarOffset => Toolbar.Position.Y + Toolbar.DrawHeight;
+        private IdleTracker idleTracker;
 
-        public readonly BindableBool HideOverlaysOnEnter = new BindableBool();
-        public readonly BindableBool AllowOpeningOverlays = new BindableBool(true);
+        /// <summary>
+        /// Whether overlays should be able to be opened game-wide. Value is sourced from the current active screen.
+        /// </summary>
+        public readonly IBindable<OverlayActivation> OverlayActivationMode = new Bindable<OverlayActivation>();
 
-        private OsuScreen screenStack;
+        /// <summary>
+        /// Whether the local user is currently interacting with the game in a way that should not be interrupted.
+        /// </summary>
+        /// <remarks>
+        /// This is exclusively managed by <see cref="Player"/>. If other components are mutating this state, a more
+        /// resilient method should be used to ensure correct state.
+        /// </remarks>
+        public Bindable<bool> LocalUserPlaying = new BindableBool();
+
+        protected OsuScreenStack ScreenStack;
+
+        protected BackButton BackButton;
+
+        protected SettingsOverlay Settings;
 
         private VolumeOverlay volume;
-        private OnScreenDisplay onscreenDisplay;
+        private OsuLogo osuLogo;
+
+        private MainMenu menuScreen;
+
+        [CanBeNull]
+        private IntroScreen introScreen;
 
         private Bindable<int> configRuleset;
-        public Bindable<RulesetInfo> Ruleset = new Bindable<RulesetInfo>();
 
         private Bindable<int> configSkin;
 
         private readonly string[] args;
 
-        private SettingsOverlay settings;
+        private readonly List<OverlayContainer> overlays = new List<OverlayContainer>();
 
-        // todo: move this to SongSelect once Screen has the ability to unsuspend.
-        public readonly Bindable<IEnumerable<Mod>> SelectedMods = new Bindable<IEnumerable<Mod>>(new List<Mod>());
+        private readonly List<OverlayContainer> visibleBlockingOverlays = new List<OverlayContainer>();
 
         public OsuGame(string[] args = null)
         {
             this.args = args;
+
+            forwardLoggedErrorsToNotifications();
+
+            SentryLogger = new SentryLogger(this);
         }
 
-        public void ToggleSettings() => settings.ToggleVisibility();
+        private void updateBlockingOverlayFade() =>
+            screenContainer.FadeColour(visibleBlockingOverlays.Any() ? OsuColour.Gray(0.5f) : Color4.White, 500, Easing.OutQuint);
 
-        public void ToggleDirect() => direct.ToggleVisibility();
+        public void AddBlockingOverlay(OverlayContainer overlay)
+        {
+            if (!visibleBlockingOverlays.Contains(overlay))
+                visibleBlockingOverlays.Add(overlay);
+            updateBlockingOverlayFade();
+        }
+
+        public void RemoveBlockingOverlay(OverlayContainer overlay)
+        {
+            visibleBlockingOverlays.Remove(overlay);
+            updateBlockingOverlayFade();
+        }
+
+        /// <summary>
+        /// Close all game-wide overlays.
+        /// </summary>
+        /// <param name="hideToolbar">Whether the toolbar should also be hidden.</param>
+        public void CloseAllOverlays(bool hideToolbar = true)
+        {
+            foreach (var overlay in overlays)
+                overlay.Hide();
+
+            if (hideToolbar) Toolbar.Hide();
+        }
 
         private DependencyContainer dependencies;
 
-        protected override IReadOnlyDependencyContainer CreateLocalDependencies(IReadOnlyDependencyContainer parent) =>
-            dependencies = new DependencyContainer(base.CreateLocalDependencies(parent));
+        protected override IReadOnlyDependencyContainer CreateChildDependencies(IReadOnlyDependencyContainer parent) =>
+            dependencies = new DependencyContainer(base.CreateChildDependencies(parent));
 
         [BackgroundDependencyLoader]
-        private void load(FrameworkConfigManager frameworkConfig)
+        private void load()
         {
-            this.frameworkConfig = frameworkConfig;
-
-            ScoreStore.ScoreImported += score => Schedule(() => LoadScore(score));
-
-            if (!Host.IsPrimaryInstance)
+            if (!Host.IsPrimaryInstance && !DebugUtils.IsDebugBuild)
             {
                 Logger.Log(@"osu! does not support multiple running instances.", LoggingTarget.Runtime, LogLevel.Error);
                 Environment.Exit(0);
@@ -126,328 +182,670 @@ namespace osu.Game
 
             if (args?.Length > 0)
             {
-                var paths = args.Where(a => !a.StartsWith(@"-"));
-
-                Task.Run(() => Import(paths.ToArray()));
+                var paths = args.Where(a => !a.StartsWith('-')).ToArray();
+                if (paths.Length > 0)
+                    Task.Run(() => Import(paths));
             }
 
             dependencies.CacheAs(this);
 
+            dependencies.Cache(SentryLogger);
+
+            dependencies.Cache(osuLogo = new OsuLogo { Alpha = 0 });
+
             // bind config int to database RulesetInfo
             configRuleset = LocalConfig.GetBindable<int>(OsuSetting.Ruleset);
             Ruleset.Value = RulesetStore.GetRuleset(configRuleset.Value) ?? RulesetStore.AvailableRulesets.First();
-            Ruleset.ValueChanged += r => configRuleset.Value = r.ID ?? 0;
+            Ruleset.ValueChanged += r => configRuleset.Value = r.NewValue.ID ?? 0;
 
             // bind config int to database SkinInfo
             configSkin = LocalConfig.GetBindable<int>(OsuSetting.Skin);
-            SkinManager.CurrentSkinInfo.ValueChanged += s => configSkin.Value = s.ID;
-            configSkin.ValueChanged += id => SkinManager.CurrentSkinInfo.Value = SkinManager.Query(s => s.ID == id) ?? SkinInfo.Default;
+            SkinManager.CurrentSkinInfo.ValueChanged += skin => configSkin.Value = skin.NewValue.ID;
+            configSkin.ValueChanged += skinId =>
+            {
+                var skinInfo = SkinManager.Query(s => s.ID == skinId.NewValue);
+
+                if (skinInfo == null)
+                {
+                    switch (skinId.NewValue)
+                    {
+                        case -1:
+                            skinInfo = DefaultLegacySkin.Info;
+                            break;
+
+                        default:
+                            skinInfo = SkinInfo.Default;
+                            break;
+                    }
+                }
+
+                SkinManager.CurrentSkinInfo.Value = skinInfo;
+            };
             configSkin.TriggerChange();
 
-            LocalConfig.BindWith(OsuSetting.VolumeInactive, inactiveVolumeAdjust);
+            IsActive.BindValueChanged(active => updateActiveState(active.NewValue), true);
+
+            Audio.AddAdjustment(AdjustableProperty.Volume, inactiveVolumeFade);
+
+            SelectedMods.BindValueChanged(modsChanged);
+            Beatmap.BindValueChanged(beatmapChanged, true);
         }
 
-        private ScheduledDelegate scoreLoad;
+        private ExternalLinkOpener externalLinkOpener;
 
         /// <summary>
-        /// Open chat to a channel matching the provided name, if present.
+        /// Handle an arbitrary URL. Displays via in-game overlays where possible.
+        /// This can be called from a non-thread-safe non-game-loaded state.
         /// </summary>
-        /// <param name="channelName">The name of the channel.</param>
-        public void OpenChannel(string channelName) => chat.OpenChannel(chat.AvailableChannels.Find(c => c.Name == channelName));
+        /// <param name="url">The URL to load.</param>
+        public void HandleLink(string url) => HandleLink(MessageFormatter.GetLinkDetails(url));
+
+        /// <summary>
+        /// Handle a specific <see cref="LinkDetails"/>.
+        /// This can be called from a non-thread-safe non-game-loaded state.
+        /// </summary>
+        /// <param name="link">The link to load.</param>
+        public void HandleLink(LinkDetails link) => Schedule(() =>
+        {
+            switch (link.Action)
+            {
+                case LinkAction.OpenBeatmap:
+                    // TODO: proper query params handling
+                    if (link.Argument != null && int.TryParse(link.Argument.Contains('?') ? link.Argument.Split('?')[0] : link.Argument, out int beatmapId))
+                        ShowBeatmap(beatmapId);
+                    break;
+
+                case LinkAction.OpenBeatmapSet:
+                    if (int.TryParse(link.Argument, out int setId))
+                        ShowBeatmapSet(setId);
+                    break;
+
+                case LinkAction.OpenChannel:
+                    ShowChannel(link.Argument);
+                    break;
+
+                case LinkAction.OpenEditorTimestamp:
+                case LinkAction.JoinMultiplayerMatch:
+                case LinkAction.Spectate:
+                    waitForReady(() => notifications, _ => notifications.Post(new SimpleNotification
+                    {
+                        Text = @"This link type is not yet supported!",
+                        Icon = FontAwesome.Solid.LifeRing,
+                    }));
+                    break;
+
+                case LinkAction.External:
+                    OpenUrlExternally(link.Argument);
+                    break;
+
+                case LinkAction.OpenUserProfile:
+                    if (int.TryParse(link.Argument, out int userId))
+                        ShowUser(userId);
+                    break;
+
+                default:
+                    throw new NotImplementedException($"This {nameof(LinkAction)} ({link.Action.ToString()}) is missing an associated action.");
+            }
+        });
+
+        public void OpenUrlExternally(string url) => waitForReady(() => externalLinkOpener, _ =>
+        {
+            if (url.StartsWith('/'))
+                url = $"{API.Endpoint}{url}";
+
+            externalLinkOpener.OpenUrlExternally(url);
+        });
+
+        /// <summary>
+        /// Open a specific channel in chat.
+        /// </summary>
+        /// <param name="channel">The channel to display.</param>
+        public void ShowChannel(string channel) => waitForReady(() => channelManager, _ =>
+        {
+            try
+            {
+                channelManager.OpenChannel(channel);
+            }
+            catch (ChannelNotFoundException)
+            {
+                Logger.Log($"The requested channel \"{channel}\" does not exist");
+            }
+        });
 
         /// <summary>
         /// Show a beatmap set as an overlay.
         /// </summary>
         /// <param name="setId">The set to display.</param>
-        public void ShowBeatmapSet(int setId) => beatmapSetOverlay.FetchAndShowBeatmapSet(setId);
+        public void ShowBeatmapSet(int setId) => waitForReady(() => beatmapSetOverlay, _ => beatmapSetOverlay.FetchAndShowBeatmapSet(setId));
 
         /// <summary>
         /// Show a user's profile as an overlay.
         /// </summary>
         /// <param name="userId">The user to display.</param>
-        public void ShowUser(long userId) => userProfile.ShowUser(userId);
+        public void ShowUser(int userId) => waitForReady(() => userProfile, _ => userProfile.ShowUser(userId));
 
         /// <summary>
         /// Show a beatmap's set as an overlay, displaying the given beatmap.
         /// </summary>
         /// <param name="beatmapId">The beatmap to show.</param>
-        public void ShowBeatmap(int beatmapId) => beatmapSetOverlay.FetchAndShowBeatmap(beatmapId);
+        public void ShowBeatmap(int beatmapId) => waitForReady(() => beatmapSetOverlay, _ => beatmapSetOverlay.FetchAndShowBeatmap(beatmapId));
 
-        protected void LoadScore(Score s)
+        /// <summary>
+        /// Present a beatmap at song select immediately.
+        /// The user should have already requested this interactively.
+        /// </summary>
+        /// <param name="beatmap">The beatmap to select.</param>
+        /// <param name="difficultyCriteria">
+        /// Optional predicate used to try and find a difficulty to select.
+        /// If omitted, this will try to present the first beatmap from the current ruleset.
+        /// In case of failure the first difficulty of the set will be presented, ignoring the predicate.
+        /// </param>
+        public void PresentBeatmap(BeatmapSetInfo beatmap, Predicate<BeatmapInfo> difficultyCriteria = null)
         {
-            scoreLoad?.Cancel();
+            difficultyCriteria ??= b => b.Ruleset.Equals(Ruleset.Value);
 
-            var menu = intro.ChildScreen;
+            var databasedSet = beatmap.OnlineBeatmapSetID != null
+                ? BeatmapManager.QueryBeatmapSet(s => s.OnlineBeatmapSetID == beatmap.OnlineBeatmapSetID)
+                : BeatmapManager.QueryBeatmapSet(s => s.Hash == beatmap.Hash);
 
-            if (menu == null)
+            if (databasedSet == null)
             {
-                scoreLoad = Schedule(() => LoadScore(s));
+                Logger.Log("The requested beatmap could not be loaded.", LoggingTarget.Information);
                 return;
             }
 
-            if (!menu.IsCurrentScreen)
+            PerformFromScreen(screen =>
             {
-                menu.MakeCurrent();
-                this.Delay(500).Schedule(() => LoadScore(s), out scoreLoad);
-                return;
-            }
+                // we might already be at song select, so a check is required before performing the load to solo.
+                if (screen is MainMenu)
+                    menuScreen.LoadToSolo();
 
-            if (s.Beatmap == null)
-            {
-                notifications.Post(new SimpleNotification
+                // we might even already be at the song
+                if (Beatmap.Value.BeatmapSetInfo.Hash == databasedSet.Hash && difficultyCriteria(Beatmap.Value.BeatmapInfo))
                 {
-                    Text = @"Tried to load a score for a beatmap we don't have!",
-                    Icon = FontAwesome.fa_life_saver,
-                });
+                    return;
+                }
+
+                // Find first beatmap that matches our predicate.
+                var first = databasedSet.Beatmaps.Find(difficultyCriteria) ?? databasedSet.Beatmaps.First();
+
+                Ruleset.Value = first.Ruleset;
+                Beatmap.Value = BeatmapManager.GetWorkingBeatmap(first);
+            }, validScreens: new[] { typeof(PlaySongSelect) });
+        }
+
+        /// <summary>
+        /// Present a score's replay immediately.
+        /// The user should have already requested this interactively.
+        /// </summary>
+        public void PresentScore(ScoreInfo score, ScorePresentType presentType = ScorePresentType.Results)
+        {
+            // The given ScoreInfo may have missing properties if it was retrieved from online data. Re-retrieve it from the database
+            // to ensure all the required data for presenting a replay are present.
+            var databasedScoreInfo = score.OnlineScoreID != null
+                ? ScoreManager.Query(s => s.OnlineScoreID == score.OnlineScoreID)
+                : ScoreManager.Query(s => s.Hash == score.Hash);
+
+            if (databasedScoreInfo == null)
+            {
+                Logger.Log("The requested score could not be found locally.", LoggingTarget.Information);
                 return;
             }
 
-            Ruleset.Value = s.Ruleset;
+            var databasedScore = ScoreManager.GetScore(databasedScoreInfo);
 
-            Beatmap.Value = BeatmapManager.GetWorkingBeatmap(s.Beatmap);
-            Beatmap.Value.Mods.Value = s.Mods;
+            if (databasedScore.Replay == null)
+            {
+                Logger.Log("The loaded score has no replay data.", LoggingTarget.Information);
+                return;
+            }
 
-            menu.Push(new PlayerLoader(new ReplayPlayer(s.Replay)));
+            var databasedBeatmap = BeatmapManager.QueryBeatmap(b => b.ID == databasedScoreInfo.Beatmap.ID);
+
+            if (databasedBeatmap == null)
+            {
+                Logger.Log("Tried to load a score for a beatmap we don't have!", LoggingTarget.Information);
+                return;
+            }
+
+            PerformFromScreen(screen =>
+            {
+                Ruleset.Value = databasedScore.ScoreInfo.Ruleset;
+                Beatmap.Value = BeatmapManager.GetWorkingBeatmap(databasedBeatmap);
+
+                switch (presentType)
+                {
+                    case ScorePresentType.Gameplay:
+                        screen.Push(new ReplayPlayerLoader(databasedScore));
+                        break;
+
+                    case ScorePresentType.Results:
+                        screen.Push(new SoloResultsScreen(databasedScore.ScoreInfo));
+                        break;
+                }
+            }, validScreens: new[] { typeof(PlaySongSelect) });
+        }
+
+        protected virtual Loader CreateLoader() => new Loader();
+
+        protected virtual UpdateManager CreateUpdateManager() => new UpdateManager();
+
+        protected override Container CreateScalingContainer() => new ScalingContainer(ScalingMode.Everything);
+
+        #region Beatmap progression
+
+        private void beatmapChanged(ValueChangedEvent<WorkingBeatmap> beatmap)
+        {
+            beatmap.OldValue?.CancelAsyncLoad();
+
+            updateModDefaults();
+
+            beatmap.NewValue?.BeginAsyncLoad();
+        }
+
+        private void modsChanged(ValueChangedEvent<IReadOnlyList<Mod>> mods)
+        {
+            updateModDefaults();
+        }
+
+        private void updateModDefaults()
+        {
+            BeatmapDifficulty baseDifficulty = Beatmap.Value.BeatmapInfo.BaseDifficulty;
+
+            if (baseDifficulty != null && SelectedMods.Value.Any(m => m is IApplicableToDifficulty))
+            {
+                var adjustedDifficulty = baseDifficulty.Clone();
+
+                foreach (var mod in SelectedMods.Value.OfType<IApplicableToDifficulty>())
+                    mod.ReadFromDifficulty(adjustedDifficulty);
+            }
+        }
+
+        #endregion
+
+        private PerformFromMenuRunner performFromMainMenuTask;
+
+        /// <summary>
+        /// Perform an action only after returning to a specific screen as indicated by <paramref name="validScreens"/>.
+        /// Eagerly tries to exit the current screen until it succeeds.
+        /// </summary>
+        /// <param name="action">The action to perform once we are in the correct state.</param>
+        /// <param name="validScreens">An optional collection of valid screen types. If any of these screens are already current we can perform the action immediately, else the first valid parent will be made current before performing the action. <see cref="MainMenu"/> is used if not specified.</param>
+        public void PerformFromScreen(Action<IScreen> action, IEnumerable<Type> validScreens = null)
+        {
+            performFromMainMenuTask?.Cancel();
+            Add(performFromMainMenuTask = new PerformFromMenuRunner(action, validScreens, () => ScreenStack.CurrentScreen));
+        }
+
+        /// <summary>
+        /// Wait for the game (and target component) to become loaded and then run an action.
+        /// </summary>
+        /// <param name="retrieveInstance">A function to retrieve a (potentially not-yet-constructed) target instance.</param>
+        /// <param name="action">The action to perform on the instance when load is confirmed.</param>
+        /// <typeparam name="T">The type of the target instance.</typeparam>
+        private void waitForReady<T>(Func<T> retrieveInstance, Action<T> action)
+            where T : Drawable
+        {
+            var instance = retrieveInstance();
+
+            if (ScreenStack == null || ScreenStack.CurrentScreen is StartupScreen || instance?.IsLoaded != true)
+                Schedule(() => waitForReady(retrieveInstance, action));
+            else
+                action(instance);
+        }
+
+        protected override void Dispose(bool isDisposing)
+        {
+            base.Dispose(isDisposing);
+            SentryLogger.Dispose();
         }
 
         protected override void LoadComplete()
         {
-            // this needs to be cached before base.LoadComplete as it is used by CursorOverrideContainer.
-            dependencies.Cache(screenshotManager = new ScreenshotManager());
-
             base.LoadComplete();
 
             // The next time this is updated is in UpdateAfterChildren, which occurs too late and results
             // in the cursor being shown for a few frames during the intro.
             // This prevents the cursor from showing until we have a screen with CursorVisible = true
-            CursorOverrideContainer.CanShowCursor = currentScreen?.CursorVisible ?? false;
+            MenuCursorContainer.CanShowCursor = menuScreen?.CursorVisible ?? false;
 
-            // hook up notifications to components.
-            SkinManager.PostNotification = n => notifications?.Post(n);
-            BeatmapManager.PostNotification = n => notifications?.Post(n);
+            // todo: all archive managers should be able to be looped here.
+            SkinManager.PostNotification = n => notifications.Post(n);
+            SkinManager.GetStableStorage = GetStorageForStableInstall;
 
+            BeatmapManager.PostNotification = n => notifications.Post(n);
             BeatmapManager.GetStableStorage = GetStorageForStableInstall;
+            BeatmapManager.PresentImport = items => PresentBeatmap(items.First());
+
+            ScoreManager.PostNotification = n => notifications.Post(n);
+            ScoreManager.GetStableStorage = GetStorageForStableInstall;
+            ScoreManager.PresentImport = items => PresentScore(items.First());
+
+            // make config aware of how to lookup skins for on-screen display purposes.
+            // if this becomes a more common thing, tracked settings should be reconsidered to allow local DI.
+            LocalConfig.LookupSkinName = id => SkinManager.GetAllUsableSkins().FirstOrDefault(s => s.ID == id)?.ToString() ?? "Unknown";
+
+            LocalConfig.LookupKeyBindings = l =>
+            {
+                var combinations = KeyBindingStore.GetReadableKeyCombinationsFor(l).ToArray();
+
+                if (combinations.Length == 0)
+                    return "none";
+
+                return string.Join(" or ", combinations);
+            };
+
+            Container logoContainer;
+            BackButton.Receptor receptor;
+
+            dependencies.CacheAs(idleTracker = new GameIdleTracker(6000));
 
             AddRange(new Drawable[]
             {
                 new VolumeControlReceptor
                 {
                     RelativeSizeAxes = Axes.Both,
-                    ActionRequested = action => volume.Adjust(action)
+                    ActionRequested = action => volume.Adjust(action),
+                    ScrollActionRequested = (action, amount, isPrecise) => volume.Adjust(action, amount, isPrecise),
                 },
-                mainContent = new Container { RelativeSizeAxes = Axes.Both },
-                overlayContent = new Container { RelativeSizeAxes = Axes.Both, Depth = float.MinValue },
+                screenContainer = new ScalingContainer(ScalingMode.ExcludeOverlays)
+                {
+                    RelativeSizeAxes = Axes.Both,
+                    Children = new Drawable[]
+                    {
+                        receptor = new BackButton.Receptor(),
+                        ScreenStack = new OsuScreenStack { RelativeSizeAxes = Axes.Both },
+                        BackButton = new BackButton(receptor)
+                        {
+                            Anchor = Anchor.BottomLeft,
+                            Origin = Anchor.BottomLeft,
+                            Action = () =>
+                            {
+                                var currentScreen = ScreenStack.CurrentScreen as IOsuScreen;
+
+                                if (currentScreen?.AllowBackButton == true && !currentScreen.OnBackButton())
+                                    ScreenStack.Exit();
+                            }
+                        },
+                        logoContainer = new Container { RelativeSizeAxes = Axes.Both },
+                    }
+                },
+                overlayContent = new Container { RelativeSizeAxes = Axes.Both },
+                rightFloatingOverlayContent = new Container { RelativeSizeAxes = Axes.Both },
+                leftFloatingOverlayContent = new Container { RelativeSizeAxes = Axes.Both },
+                topMostOverlayContent = new Container { RelativeSizeAxes = Axes.Both },
+                idleTracker,
+                new ConfineMouseTracker()
             });
 
-            loadComponentSingleFile(screenStack = new Loader(), d =>
+            ScreenStack.ScreenPushed += screenPushed;
+            ScreenStack.ScreenExited += screenExited;
+
+            loadComponentSingleFile(osuLogo, logo =>
             {
-                screenStack.ModePushed += screenAdded;
-                screenStack.Exited += screenRemoved;
-                mainContent.Add(screenStack);
+                logoContainer.Add(logo);
+
+                // Loader has to be created after the logo has finished loading as Loader performs logo transformations on entering.
+                ScreenStack.Push(CreateLoader().With(l => l.RelativeSizeAxes = Axes.Both));
             });
 
             loadComponentSingleFile(Toolbar = new Toolbar
             {
-                Depth = -5,
                 OnHome = delegate
                 {
-                    hideAllOverlays();
-                    intro?.ChildScreen?.MakeCurrent();
+                    CloseAllOverlays(false);
+                    menuScreen?.MakeCurrent();
                 },
-            }, overlayContent.Add);
+            }, topMostOverlayContent.Add);
 
-            loadComponentSingleFile(volume = new VolumeOverlay(), overlayContent.Add);
-            loadComponentSingleFile(onscreenDisplay = new OnScreenDisplay(), Add);
+            loadComponentSingleFile(volume = new VolumeOverlay(), leftFloatingOverlayContent.Add, true);
+
+            var onScreenDisplay = new OnScreenDisplay();
+
+            onScreenDisplay.BeginTracking(this, frameworkConfig);
+            onScreenDisplay.BeginTracking(this, LocalConfig);
+
+            loadComponentSingleFile(onScreenDisplay, Add, true);
+
+            loadComponentSingleFile(notifications.With(d =>
+            {
+                d.GetToolbarHeight = () => ToolbarOffset;
+                d.Anchor = Anchor.TopRight;
+                d.Origin = Anchor.TopRight;
+            }), rightFloatingOverlayContent.Add, true);
+
+            loadComponentSingleFile(new CollectionManager(Storage)
+            {
+                PostNotification = n => notifications.Post(n),
+                GetStableStorage = GetStorageForStableInstall
+            }, Add, true);
 
             loadComponentSingleFile(screenshotManager, Add);
 
-            //overlay elements
-            loadComponentSingleFile(direct = new DirectOverlay { Depth = -1 }, mainContent.Add);
-            loadComponentSingleFile(social = new SocialOverlay { Depth = -1 }, mainContent.Add);
-            loadComponentSingleFile(chat = new ChatOverlay { Depth = -1 }, mainContent.Add);
-            loadComponentSingleFile(settings = new MainSettings
+            // dependency on notification overlay, dependent by settings overlay
+            loadComponentSingleFile(CreateUpdateManager(), Add, true);
+
+            // overlay elements
+            loadComponentSingleFile(new ManageCollectionsDialog(), overlayContent.Add, true);
+            loadComponentSingleFile(beatmapListing = new BeatmapListingOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(dashboard = new DashboardOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(news = new NewsOverlay(), overlayContent.Add, true);
+            var rankingsOverlay = loadComponentSingleFile(new RankingsOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(channelManager = new ChannelManager(), AddInternal, true);
+            loadComponentSingleFile(chatOverlay = new ChatOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(Settings = new SettingsOverlay { GetToolbarHeight = () => ToolbarOffset }, leftFloatingOverlayContent.Add, true);
+            var changelogOverlay = loadComponentSingleFile(new ChangelogOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(userProfile = new UserProfileOverlay(), overlayContent.Add, true);
+            loadComponentSingleFile(beatmapSetOverlay = new BeatmapSetOverlay(), overlayContent.Add, true);
+
+            loadComponentSingleFile(new LoginOverlay
             {
                 GetToolbarHeight = () => ToolbarOffset,
-                Depth = -1
-            }, overlayContent.Add);
-            loadComponentSingleFile(userProfile = new UserProfileOverlay { Depth = -2 }, mainContent.Add);
-            loadComponentSingleFile(beatmapSetOverlay = new BeatmapSetOverlay { Depth = -3 }, mainContent.Add);
-            loadComponentSingleFile(musicController = new MusicController
-            {
-                Depth = -4,
-                Position = new Vector2(0, Toolbar.HEIGHT),
                 Anchor = Anchor.TopRight,
                 Origin = Anchor.TopRight,
-            }, overlayContent.Add);
+            }, rightFloatingOverlayContent.Add, true);
 
-            loadComponentSingleFile(notifications = new NotificationOverlay
+            loadComponentSingleFile(new NowPlayingOverlay
             {
                 GetToolbarHeight = () => ToolbarOffset,
-                Depth = -4,
                 Anchor = Anchor.TopRight,
                 Origin = Anchor.TopRight,
-            }, overlayContent.Add);
+            }, rightFloatingOverlayContent.Add, true);
 
-            loadComponentSingleFile(dialogOverlay = new DialogOverlay
-            {
-                Depth = -6,
-            }, overlayContent.Add);
+            loadComponentSingleFile(new AccountCreationOverlay(), topMostOverlayContent.Add, true);
+            loadComponentSingleFile(new DialogOverlay(), topMostOverlayContent.Add, true);
 
-            forwardLoggedErrorsToNotifications();
+            chatOverlay.State.ValueChanged += state => channelManager.HighPollRate.Value = state.NewValue == Visibility.Visible;
 
-            dependencies.Cache(settings);
-            dependencies.Cache(onscreenDisplay);
-            dependencies.Cache(social);
-            dependencies.Cache(direct);
-            dependencies.Cache(chat);
-            dependencies.Cache(userProfile);
-            dependencies.Cache(musicController);
-            dependencies.Cache(beatmapSetOverlay);
-            dependencies.Cache(notifications);
-            dependencies.Cache(dialogOverlay);
+            Add(externalLinkOpener = new ExternalLinkOpener());
+            Add(new MusicKeyBindingHandler());
 
-            // ensure only one of these overlays are open at once.
-            var singleDisplayOverlays = new OverlayContainer[] { chat, social, direct };
-            foreach (var overlay in singleDisplayOverlays)
-            {
-                overlay.StateChanged += state =>
-                {
-                    if (state == Visibility.Hidden) return;
+            // side overlays which cancel each other.
+            var singleDisplaySideOverlays = new OverlayContainer[] { Settings, notifications };
 
-                    foreach (var c in singleDisplayOverlays)
-                    {
-                        if (c == overlay) continue;
-                        c.State = Visibility.Hidden;
-                    }
-                };
-            }
-
-            var singleDisplaySideOverlays = new OverlayContainer[] { settings, notifications };
             foreach (var overlay in singleDisplaySideOverlays)
             {
-                overlay.StateChanged += state =>
+                overlay.State.ValueChanged += state =>
                 {
-                    if (state == Visibility.Hidden) return;
+                    if (state.NewValue == Visibility.Hidden) return;
 
-                    foreach (var c in singleDisplaySideOverlays)
-                    {
-                        if (c == overlay) continue;
-                        c.State = Visibility.Hidden;
-                    }
+                    singleDisplaySideOverlays.Where(o => o != overlay).ForEach(o => o.Hide());
                 };
             }
 
             // eventually informational overlays should be displayed in a stack, but for now let's only allow one to stay open at a time.
             var informationalOverlays = new OverlayContainer[] { beatmapSetOverlay, userProfile };
+
             foreach (var overlay in informationalOverlays)
             {
-                overlay.StateChanged += state =>
+                overlay.State.ValueChanged += state =>
                 {
-                    if (state == Visibility.Hidden) return;
-
-                    foreach (var c in informationalOverlays)
-                    {
-                        if (c == overlay) continue;
-                        c.State = Visibility.Hidden;
-                    }
+                    if (state.NewValue != Visibility.Hidden)
+                        showOverlayAboveOthers(overlay, informationalOverlays);
                 };
             }
+
+            // ensure only one of these overlays are open at once.
+            var singleDisplayOverlays = new OverlayContainer[] { chatOverlay, news, dashboard, beatmapListing, changelogOverlay, rankingsOverlay };
+
+            foreach (var overlay in singleDisplayOverlays)
+            {
+                overlay.State.ValueChanged += state =>
+                {
+                    // informational overlays should be dismissed on a show or hide of a full overlay.
+                    informationalOverlays.ForEach(o => o.Hide());
+
+                    if (state.NewValue != Visibility.Hidden)
+                        showOverlayAboveOthers(overlay, singleDisplayOverlays);
+                };
+            }
+
+            OverlayActivationMode.ValueChanged += mode =>
+            {
+                if (mode.NewValue != OverlayActivation.All) CloseAllOverlays();
+            };
 
             void updateScreenOffset()
             {
                 float offset = 0;
 
-                if (settings.State == Visibility.Visible)
-                    offset += ToolbarButton.WIDTH / 2;
-                if (notifications.State == Visibility.Visible)
-                    offset -= ToolbarButton.WIDTH / 2;
+                if (Settings.State.Value == Visibility.Visible)
+                    offset += Toolbar.HEIGHT / 2;
+                if (notifications.State.Value == Visibility.Visible)
+                    offset -= Toolbar.HEIGHT / 2;
 
-                screenStack.MoveToX(offset, SettingsOverlay.TRANSITION_LENGTH, Easing.OutQuint);
+                screenContainer.MoveToX(offset, SettingsPanel.TRANSITION_LENGTH, Easing.OutQuint);
             }
 
-            settings.StateChanged += _ => updateScreenOffset();
-            notifications.StateChanged += _ => updateScreenOffset();
+            Settings.State.ValueChanged += _ => updateScreenOffset();
+            notifications.State.ValueChanged += _ => updateScreenOffset();
+        }
 
-            notifications.Enabled.BindTo(AllowOpeningOverlays);
+        private void showOverlayAboveOthers(OverlayContainer overlay, OverlayContainer[] otherOverlays)
+        {
+            otherOverlays.Where(o => o != overlay).ForEach(o => o.Hide());
 
-            HideOverlaysOnEnter.ValueChanged += hide =>
-            {
-                //central game screen change logic.
-                if (hide)
-                {
-                    hideAllOverlays();
-                    musicController.State = Visibility.Hidden;
-                    Toolbar.State = Visibility.Hidden;
-                }
-                else
-                    Toolbar.State = Visibility.Visible;
-            };
+            // show above others if not visible at all, else leave at current depth.
+            if (!overlay.IsPresent)
+                overlayContent.ChangeChildDepth(overlay, (float)-Clock.CurrentTime);
         }
 
         private void forwardLoggedErrorsToNotifications()
         {
-            int recentErrorCount = 0;
+            int recentLogCount = 0;
 
-            const double debounce = 5000;
+            const double debounce = 60000;
 
             Logger.NewEntry += entry =>
             {
-                if (entry.Level < LogLevel.Error || entry.Target == null) return;
+                if (entry.Level < LogLevel.Important || entry.Target == null) return;
 
-                if (recentErrorCount < 2)
+                const int short_term_display_limit = 3;
+
+                if (recentLogCount < short_term_display_limit)
                 {
-                    notifications.Post(new SimpleNotification
+                    Schedule(() => notifications.Post(new SimpleNotification
                     {
-                        Icon = FontAwesome.fa_bomb,
-                        Text = (recentErrorCount == 0 ? entry.Message : "Subsequent errors occurred and have been logged.") + "\nClick to view log files.",
+                        Icon = entry.Level == LogLevel.Important ? FontAwesome.Solid.ExclamationCircle : FontAwesome.Solid.Bomb,
+                        Text = entry.Message.Truncate(256) + (entry.Exception != null && IsDeployedBuild ? "\n\nThis error has been automatically reported to the devs." : string.Empty),
+                    }));
+                }
+                else if (recentLogCount == short_term_display_limit)
+                {
+                    Schedule(() => notifications.Post(new SimpleNotification
+                    {
+                        Icon = FontAwesome.Solid.EllipsisH,
+                        Text = "Subsequent messages have been logged. Click to view log files.",
                         Activated = () =>
                         {
-                            Host.Storage.GetStorageForDirectory("logs").OpenInNativeExplorer();
+                            Storage.GetStorageForDirectory("logs").OpenInNativeExplorer();
                             return true;
                         }
-                    });
+                    }));
                 }
 
-                Interlocked.Increment(ref recentErrorCount);
-
-                Scheduler.AddDelayed(() => Interlocked.Decrement(ref recentErrorCount), debounce);
+                Interlocked.Increment(ref recentLogCount);
+                Scheduler.AddDelayed(() => Interlocked.Decrement(ref recentLogCount), debounce);
             };
         }
 
         private Task asyncLoadStream;
-        private int visibleOverlayCount;
 
-        private void loadComponentSingleFile<T>(T d, Action<T> add)
+        /// <summary>
+        /// Queues loading the provided component in sequential fashion.
+        /// This operation is limited to a single thread to avoid saturating all cores.
+        /// </summary>
+        /// <param name="component">The component to load.</param>
+        /// <param name="loadCompleteAction">An action to invoke on load completion (generally to add the component to the hierarchy).</param>
+        /// <param name="cache">Whether to cache the component as type <typeparamref name="T"/> into the game dependencies before any scheduling.</param>
+        private T loadComponentSingleFile<T>(T component, Action<T> loadCompleteAction, bool cache = false)
             where T : Drawable
         {
-            var focused = d as FocusedOverlayContainer;
-            if (focused != null)
-            {
-                focused.StateChanged += s =>
-                {
-                    visibleOverlayCount += s == Visibility.Visible ? 1 : -1;
-                    screenStack.FadeColour(visibleOverlayCount > 0 ? OsuColour.Gray(0.5f) : Color4.White, 500, Easing.OutQuint);
-                };
-            }
+            if (cache)
+                dependencies.CacheAs(component);
+
+            if (component is OverlayContainer overlay)
+                overlays.Add(overlay);
 
             // schedule is here to ensure that all component loads are done after LoadComplete is run (and thus all dependencies are cached).
             // with some better organisation of LoadComplete to do construction and dependency caching in one step, followed by calls to loadComponentSingleFile,
             // we could avoid the need for scheduling altogether.
-            Schedule(() => { asyncLoadStream = asyncLoadStream?.ContinueWith(t => LoadComponentAsync(d, add).Wait()) ?? LoadComponentAsync(d, add); });
+            Schedule(() =>
+            {
+                var previousLoadStream = asyncLoadStream;
+
+                // chain with existing load stream
+                asyncLoadStream = Task.Run(async () =>
+                {
+                    if (previousLoadStream != null)
+                        await previousLoadStream;
+
+                    try
+                    {
+                        Logger.Log($"Loading {component}...", level: LogLevel.Debug);
+
+                        // Since this is running in a separate thread, it is possible for OsuGame to be disposed after LoadComponentAsync has been called
+                        // throwing an exception. To avoid this, the call is scheduled on the update thread, which does not run if IsDisposed = true
+                        Task task = null;
+                        var del = new ScheduledDelegate(() => task = LoadComponentAsync(component, loadCompleteAction));
+                        Scheduler.Add(del);
+
+                        // The delegate won't complete if OsuGame has been disposed in the meantime
+                        while (!IsDisposed && !del.Completed)
+                            await Task.Delay(10);
+
+                        // Either we're disposed or the load process has started successfully
+                        if (IsDisposed)
+                            return;
+
+                        Debug.Assert(task != null);
+
+                        await task;
+
+                        Logger.Log($"Loaded {component}!", level: LogLevel.Debug);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                });
+            });
+
+            return component;
+        }
+
+        protected override bool OnScroll(ScrollEvent e)
+        {
+            // forward any unhandled mouse scroll events to the volume control.
+            volume.Adjust(GlobalAction.IncreaseVolume, e.ScrollDelta.Y, e.IsPrecise);
+            return true;
         }
 
         public bool OnPressed(GlobalAction action)
         {
-            if (intro == null) return false;
+            if (introScreen == null) return false;
 
             switch (action)
             {
-                case GlobalAction.ToggleChat:
-                    chat.ToggleVisibility();
-                    return true;
-                case GlobalAction.ToggleSocial:
-                    social.ToggleVisibility();
-                    return true;
                 case GlobalAction.ResetInputSettings:
                     var sensitivity = frameworkConfig.GetBindable<double>(FrameworkSetting.CursorSensitivity);
 
@@ -458,65 +856,62 @@ namespace osu.Game
                     frameworkConfig.Set(FrameworkSetting.IgnoredInputHandlers, string.Empty);
                     frameworkConfig.GetBindable<ConfineMouseMode>(FrameworkSetting.ConfineMouseMode).SetDefault();
                     return true;
+
                 case GlobalAction.ToggleToolbar:
                     Toolbar.ToggleVisibility();
                     return true;
-                case GlobalAction.ToggleSettings:
-                    settings.ToggleVisibility();
-                    return true;
-                case GlobalAction.ToggleDirect:
-                    direct.ToggleVisibility();
-                    return true;
+
                 case GlobalAction.ToggleGameplayMouseButtons:
                     LocalConfig.Set(OsuSetting.MouseDisableButtons, !LocalConfig.Get<bool>(OsuSetting.MouseDisableButtons));
+                    return true;
+
+                case GlobalAction.RandomSkin:
+                    SkinManager.SelectRandomSkin();
                     return true;
             }
 
             return false;
         }
 
-        private readonly BindableDouble inactiveVolumeAdjust = new BindableDouble();
+        #region Inactive audio dimming
 
-        protected override void OnDeactivated()
+        private readonly BindableDouble inactiveVolumeFade = new BindableDouble();
+
+        private void updateActiveState(bool isActive)
         {
-            base.OnDeactivated();
-            Audio.AddAdjustment(AdjustableProperty.Volume, inactiveVolumeAdjust);
+            if (isActive)
+                this.TransformBindableTo(inactiveVolumeFade, 1, 400, Easing.OutQuint);
+            else
+                this.TransformBindableTo(inactiveVolumeFade, LocalConfig.Get<double>(OsuSetting.VolumeInactive), 4000, Easing.OutQuint);
         }
 
-        protected override void OnActivated()
+        #endregion
+
+        public void OnReleased(GlobalAction action)
         {
-            base.OnActivated();
-            Audio.RemoveAdjustment(AdjustableProperty.Volume, inactiveVolumeAdjust);
         }
-
-        public bool OnReleased(GlobalAction action) => false;
-
-        private Container mainContent;
 
         private Container overlayContent;
 
-        private OsuScreen currentScreen;
-        private FrameworkConfigManager frameworkConfig;
+        private Container rightFloatingOverlayContent;
 
-        private void hideAllOverlays()
-        {
-            settings.State = Visibility.Hidden;
-            chat.State = Visibility.Hidden;
-            direct.State = Visibility.Hidden;
-            social.State = Visibility.Hidden;
-            userProfile.State = Visibility.Hidden;
-            notifications.State = Visibility.Hidden;
-        }
+        private Container leftFloatingOverlayContent;
+
+        private Container topMostOverlayContent;
+
+        [Resolved]
+        private FrameworkConfigManager frameworkConfig { get; set; }
+
+        private ScalingContainer screenContainer;
 
         protected override bool OnExiting()
         {
-            if (screenStack.ChildScreen == null) return false;
+            if (ScreenStack.CurrentScreen is Loader)
+                return false;
 
-            if (intro == null) return true;
-
-            if (!intro.DidLoadMenu || intro.ChildScreen != null)
+            if (introScreen?.DidLoadMenu == true && !(ScreenStack.CurrentScreen is IntroScreen))
             {
-                Scheduler.Add(intro.MakeCurrent);
+                Scheduler.Add(introScreen.MakeCurrent);
                 return true;
             }
 
@@ -539,29 +934,63 @@ namespace osu.Game
         {
             base.UpdateAfterChildren();
 
-            // we only want to apply these restrictions when we are inside a screen stack.
-            // the use case for not applying is in visual/unit tests.
-            bool applyRestrictions = !currentScreen?.AllowBeatmapRulesetChange ?? false;
+            screenContainer.Padding = new MarginPadding { Top = ToolbarOffset };
+            overlayContent.Padding = new MarginPadding { Top = ToolbarOffset };
 
-            Ruleset.Disabled = applyRestrictions;
-            Beatmap.Disabled = applyRestrictions;
-
-            mainContent.Padding = new MarginPadding { Top = ToolbarOffset };
-
-            CursorOverrideContainer.CanShowCursor = currentScreen?.CursorVisible ?? false;
+            MenuCursorContainer.CanShowCursor = (ScreenStack.CurrentScreen as IOsuScreen)?.CursorVisible ?? false;
         }
 
-        private void screenAdded(Screen newScreen)
+        protected virtual void ScreenChanged(IScreen current, IScreen newScreen)
         {
-            currentScreen = (OsuScreen)newScreen;
+            switch (newScreen)
+            {
+                case IntroScreen intro:
+                    introScreen = intro;
+                    break;
 
-            newScreen.ModePushed += screenAdded;
-            newScreen.Exited += screenRemoved;
+                case MainMenu menu:
+                    menuScreen = menu;
+                    break;
+            }
+
+            // reset on screen change for sanity.
+            LocalUserPlaying.Value = false;
+
+            if (current is IOsuScreen currentOsuScreen)
+            {
+                OverlayActivationMode.UnbindFrom(currentOsuScreen.OverlayActivationMode);
+                API.Activity.UnbindFrom(currentOsuScreen.Activity);
+            }
+
+            if (newScreen is IOsuScreen newOsuScreen)
+            {
+                OverlayActivationMode.BindTo(newOsuScreen.OverlayActivationMode);
+                ((IBindable<UserActivity>)API.Activity).BindTo(newOsuScreen.Activity);
+
+                MusicController.AllowRateAdjustments = newOsuScreen.AllowRateAdjustments;
+
+                if (newOsuScreen.HideOverlaysOnEnter)
+                    CloseAllOverlays();
+                else
+                    Toolbar.Show();
+
+                if (newOsuScreen.AllowBackButton)
+                    BackButton.Show();
+                else
+                    BackButton.Hide();
+            }
         }
 
-        private void screenRemoved(Screen newScreen)
+        private void screenPushed(IScreen lastScreen, IScreen newScreen)
         {
-            currentScreen = (OsuScreen)newScreen;
+            ScreenChanged(lastScreen, newScreen);
+            Logger.Log($"Screen changed → {newScreen}");
+        }
+
+        private void screenExited(IScreen lastScreen, IScreen newScreen)
+        {
+            ScreenChanged(lastScreen, newScreen);
+            Logger.Log($"Screen changed ← {newScreen}");
 
             if (newScreen == null)
                 Exit();

@@ -1,5 +1,5 @@
-﻿// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.Linq;
@@ -9,46 +9,38 @@ using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Graphics;
 using osu.Game.Rulesets.Objects.Drawables;
-using osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces;
-using OpenTK;
-using OpenTK.Graphics;
+using osuTK.Graphics;
 using osu.Framework.Graphics.Shapes;
-using osu.Game.Rulesets.Taiko.Judgements;
+using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Scoring;
+using osu.Game.Rulesets.Taiko.Objects.Drawables.Pieces;
+using osu.Game.Skinning;
 
 namespace osu.Game.Rulesets.Taiko.Objects.Drawables
 {
     public class DrawableSwell : DrawableTaikoHitObject<Swell>
     {
-        /// <summary>
-        /// Invoked when the swell has reached the hit target, i.e. when CurrentTime >= StartTime.
-        /// This is only ever invoked once.
-        /// </summary>
-        public event Action OnStart;
-
         private const float target_ring_thick_border = 1.4f;
         private const float target_ring_thin_border = 1f;
         private const float target_ring_scale = 5f;
         private const float inner_ring_alpha = 0.65f;
 
+        /// <summary>
+        /// Offset away from the start time of the swell at which the ring starts appearing.
+        /// </summary>
+        private const double ring_appear_offset = 100;
+
+        private readonly Container<DrawableSwellTick> ticks;
         private readonly Container bodyContainer;
         private readonly CircularContainer targetRing;
         private readonly CircularContainer expandingRing;
-
-        /// <summary>
-        /// The amount of times the user has hit this swell.
-        /// </summary>
-        private int userHits;
-
-        private bool hasStarted;
-        private readonly SwellSymbolPiece symbol;
 
         public DrawableSwell(Swell swell)
             : base(swell)
         {
             FillMode = FillMode.Fit;
 
-            AddInternal(bodyContainer = new Container
+            Content.Add(bodyContainer = new Container
             {
                 RelativeSizeAxes = Axes.Both,
                 Depth = 1,
@@ -61,7 +53,7 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
                         Origin = Anchor.Centre,
                         Alpha = 0,
                         RelativeSizeAxes = Axes.Both,
-                        Blending = BlendingMode.Additive,
+                        Blending = BlendingParameters.Additive,
                         Masking = true,
                         Children = new[]
                         {
@@ -80,7 +72,7 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
                         RelativeSizeAxes = Axes.Both,
                         Masking = true,
                         BorderThickness = target_ring_thick_border,
-                        Blending = BlendingMode.Additive,
+                        Blending = BlendingParameters.Additive,
                         Children = new Drawable[]
                         {
                             new Box
@@ -113,16 +105,23 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
                 }
             });
 
-            MainPiece.Add(symbol = new SwellSymbolPiece());
+            AddInternal(ticks = new Container<DrawableSwellTick> { RelativeSizeAxes = Axes.Both });
         }
 
         [BackgroundDependencyLoader]
         private void load(OsuColour colours)
         {
-            MainPiece.AccentColour = colours.YellowDark;
             expandingRing.Colour = colours.YellowLight;
             targetRing.BorderColour = colours.YellowDark.Opacity(0.25f);
         }
+
+        protected override SkinnableDrawable CreateMainPiece() => new SkinnableDrawable(new TaikoSkinComponent(TaikoSkinComponents.Swell),
+            _ => new SwellCirclePiece
+            {
+                // to allow for rotation transform
+                Anchor = Anchor.Centre,
+                Origin = Anchor.Centre,
+            });
 
         protected override void LoadComplete()
         {
@@ -132,57 +131,114 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
             Width *= Parent.RelativeChildSize.X;
         }
 
-        protected override void CheckForJudgements(bool userTriggered, double timeOffset)
+        protected override void AddNestedHitObject(DrawableHitObject hitObject)
+        {
+            base.AddNestedHitObject(hitObject);
+
+            switch (hitObject)
+            {
+                case DrawableSwellTick tick:
+                    ticks.Add(tick);
+                    break;
+            }
+        }
+
+        protected override void ClearNestedHitObjects()
+        {
+            base.ClearNestedHitObjects();
+            ticks.Clear();
+        }
+
+        protected override DrawableHitObject CreateNestedHitObject(HitObject hitObject)
+        {
+            switch (hitObject)
+            {
+                case SwellTick tick:
+                    return new DrawableSwellTick(tick);
+            }
+
+            return base.CreateNestedHitObject(hitObject);
+        }
+
+        protected override void CheckForResult(bool userTriggered, double timeOffset)
         {
             if (userTriggered)
             {
-                userHits++;
+                DrawableSwellTick nextTick = null;
 
-                var completion = (float)userHits / HitObject.RequiredHits;
+                foreach (var t in ticks)
+                {
+                    if (!t.IsHit)
+                    {
+                        nextTick = t;
+                        break;
+                    }
+                }
+
+                nextTick?.TriggerResult(true);
+
+                var numHits = ticks.Count(r => r.IsHit);
+
+                var completion = (float)numHits / HitObject.RequiredHits;
 
                 expandingRing
-                    .FadeTo(expandingRing.Alpha + MathHelper.Clamp(completion / 16, 0.1f, 0.6f), 50)
+                    .FadeTo(expandingRing.Alpha + Math.Clamp(completion / 16, 0.1f, 0.6f), 50)
                     .Then()
                     .FadeTo(completion / 8, 2000, Easing.OutQuint);
 
-                symbol.RotateTo((float)(completion * HitObject.Duration / 8), 4000, Easing.OutQuint);
+                MainPiece.Drawable.RotateTo((float)(completion * HitObject.Duration / 8), 4000, Easing.OutQuint);
 
                 expandingRing.ScaleTo(1f + Math.Min(target_ring_scale - 1f, (target_ring_scale - 1f) * completion * 1.3f), 260, Easing.OutQuint);
 
-                if (userHits == HitObject.RequiredHits)
-                    AddJudgement(new TaikoJudgement { Result = HitResult.Great });
+                if (numHits == HitObject.RequiredHits)
+                    ApplyResult(r => r.Type = HitResult.Great);
             }
             else
             {
                 if (timeOffset < 0)
                     return;
 
-                //TODO: THIS IS SHIT AND CAN'T EXIST POST-TAIKO WORLD CUP
-                AddJudgement(userHits > HitObject.RequiredHits / 2
-                    ? new TaikoJudgement { Result = HitResult.Good }
-                    : new TaikoJudgement { Result = HitResult.Miss });
+                int numHits = 0;
+
+                foreach (var tick in ticks)
+                {
+                    if (tick.IsHit)
+                    {
+                        numHits++;
+                        continue;
+                    }
+
+                    tick.TriggerResult(false);
+                }
+
+                ApplyResult(r => r.Type = numHits > HitObject.RequiredHits / 2 ? HitResult.Ok : r.Judgement.MinResult);
             }
         }
 
-        protected override void UpdateState(ArmedState state)
+        protected override void UpdateStartTimeStateTransforms()
         {
-            const float preempt = 100;
-            const float out_transition_time = 300;
+            base.UpdateStartTimeStateTransforms();
 
-            double untilStartTime = HitObject.StartTime - Time.Current;
-            double untilJudgement = untilStartTime + (Judgements.FirstOrDefault()?.TimeOffset ?? 0) + HitObject.Duration;
+            using (BeginDelayedSequence(-ring_appear_offset, true))
+                targetRing.ScaleTo(target_ring_scale, 400, Easing.OutQuint);
+        }
 
-            targetRing.Delay(untilStartTime - preempt).ScaleTo(target_ring_scale, preempt * 4, Easing.OutQuint);
-            this.Delay(untilJudgement).FadeOut(out_transition_time, Easing.Out);
+        protected override void UpdateHitStateTransforms(ArmedState state)
+        {
+            const double transition_duration = 300;
 
             switch (state)
             {
+                case ArmedState.Idle:
+                    expandingRing.FadeTo(0);
+                    break;
+
+                case ArmedState.Miss:
                 case ArmedState.Hit:
-                    bodyContainer.Delay(untilJudgement).ScaleTo(1.4f, out_transition_time);
+                    this.FadeOut(transition_duration, Easing.Out);
+                    bodyContainer.ScaleTo(1.4f, transition_duration);
                     break;
             }
-
-            Expire();
         }
 
         protected override void Update()
@@ -194,12 +250,10 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
             // Make the swell stop at the hit target
             X = Math.Max(0, X);
 
-            double t = Math.Min(HitObject.StartTime, Time.Current);
-            if (t == HitObject.StartTime && !hasStarted)
-            {
-                OnStart?.Invoke();
-                hasStarted = true;
-            }
+            if (Time.Current >= HitObject.StartTime - ring_appear_offset)
+                ProxyContent();
+            else
+                UnproxyContent();
         }
 
         private bool? lastWasCentre;
@@ -215,9 +269,10 @@ namespace osu.Game.Rulesets.Taiko.Objects.Drawables
             // Ensure alternating centre and rim hits
             if (lastWasCentre == isCentre)
                 return false;
+
             lastWasCentre = isCentre;
 
-            UpdateJudgement(true);
+            UpdateResult(true);
 
             return true;
         }

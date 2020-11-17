@@ -1,44 +1,40 @@
-// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using osu.Framework.Audio.Track;
 using osu.Framework.Extensions.IEnumerableExtensions;
-using osu.Framework.Timing;
-using osu.Game.Beatmaps;
 using osu.Game.Rulesets.Mods;
-using osu.Game.Rulesets.Scoring;
+using osu.Game.Scoring;
 
 namespace osu.Game.Rulesets.Difficulty
 {
     public abstract class PerformanceCalculator
     {
-        private readonly Dictionary<string, double> attributes = new Dictionary<string, double>();
-        protected IDictionary<string, double> Attributes => attributes;
+        protected readonly DifficultyAttributes Attributes;
 
         protected readonly Ruleset Ruleset;
-        protected readonly IBeatmap Beatmap;
-        protected readonly Score Score;
+        protected readonly ScoreInfo Score;
 
         protected double TimeRate { get; private set; } = 1;
 
-        protected PerformanceCalculator(Ruleset ruleset, IBeatmap beatmap, Score score)
+        protected PerformanceCalculator(Ruleset ruleset, DifficultyAttributes attributes, ScoreInfo score)
         {
             Ruleset = ruleset;
-            Beatmap = beatmap;
             Score = score;
 
-            var diffCalc = ruleset.CreateDifficultyCalculator(beatmap, score.Mods);
-            diffCalc.Calculate(attributes);
+            Attributes = attributes ?? throw new ArgumentNullException(nameof(attributes));
 
             ApplyMods(score.Mods);
         }
 
         protected virtual void ApplyMods(Mod[] mods)
         {
-            var clock = new StopwatchClock();
-            mods.OfType<IApplicableToClock>().ForEach(m => m.ApplyToClock(clock));
-            TimeRate = clock.Rate;
+            var track = new TrackVirtual(10000);
+            mods.OfType<IApplicableToTrack>().ForEach(m => m.ApplyToTrack(track));
+            TimeRate = track.Rate;
         }
 
         public abstract double Calculate(Dictionary<string, double> categoryDifficulty = null);

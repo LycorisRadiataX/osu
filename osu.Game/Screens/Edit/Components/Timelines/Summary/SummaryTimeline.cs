@@ -1,12 +1,11 @@
-// Copyright (c) 2007-2018 ppy Pty Ltd <contact@ppy.sh>.
-// Licensed under the MIT Licence - https://raw.githubusercontent.com/ppy/osu/master/LICENCE
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// See the LICENCE file in the repository root for full licence text.
 
-using OpenTK;
+using osuTK;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
-using osu.Framework.Timing;
 using osu.Game.Graphics;
 using osu.Game.Screens.Edit.Components.Timelines.Summary.Parts;
 
@@ -18,21 +17,19 @@ namespace osu.Game.Screens.Edit.Components.Timelines.Summary
     public class SummaryTimeline : BottomBarContainer
     {
         [BackgroundDependencyLoader]
-        private void load(OsuColour colours, IAdjustableClock adjustableClock)
+        private void load(OsuColour colours)
         {
-            TimelinePart markerPart, controlPointPart, bookmarkPart, breakPart;
-
             Children = new Drawable[]
             {
-                markerPart = new MarkerPart(adjustableClock) { RelativeSizeAxes = Axes.Both },
-                controlPointPart = new ControlPointPart
+                new MarkerPart { RelativeSizeAxes = Axes.Both },
+                new ControlPointPart
                 {
                     Anchor = Anchor.Centre,
                     Origin = Anchor.BottomCentre,
                     RelativeSizeAxes = Axes.Both,
                     Height = 0.35f
                 },
-                bookmarkPart = new BookmarkPart
+                new BookmarkPart
                 {
                     Anchor = Anchor.Centre,
                     Origin = Anchor.TopCentre,
@@ -67,7 +64,7 @@ namespace osu.Game.Screens.Edit.Components.Timelines.Summary
                         },
                     }
                 },
-                breakPart = new BreakPart
+                new BreakPart
                 {
                     Anchor = Anchor.Centre,
                     Origin = Anchor.Centre,
@@ -75,11 +72,6 @@ namespace osu.Game.Screens.Edit.Components.Timelines.Summary
                     Height = 0.25f
                 }
             };
-
-            markerPart.Beatmap.BindTo(Beatmap);
-            controlPointPart.Beatmap.BindTo(Beatmap);
-            bookmarkPart.Beatmap.BindTo(Beatmap);
-            breakPart.Beatmap.BindTo(Beatmap);
         }
     }
 }
